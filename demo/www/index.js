@@ -7,6 +7,8 @@ function addRemoteTrack(event)
 	const track	= event.track;
 	const stream	= event.streams[0];
 	
+	if (!stream)
+		return;
 	stream.oninactive = (event)=>console.log(event);
 	
 	//Check if video is already present

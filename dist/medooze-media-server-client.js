@@ -2214,6 +2214,7 @@ class PeerConnectionClient
 		
 		//Listen for events
 		this.ns.on("event",(event)=> {
+			//console.log("-remote event",event);
 			//Get event data
 			const data = event.data;
 			//Check event name
@@ -2221,12 +2222,29 @@ class PeerConnectionClient
 			{
 				case "addedtrack":
 				{
+					let transceiver;
 					//Get track info
 					const trackInfo = TrackInfo.expand(data.track);
-					//Add new recv only transceiver
-					const transceiver = this.pc.addTransceiver(trackInfo.getMedia(),{
-						direction : "recvonly"
-					});
+					//Check if we can reuse a transceiver
+					for (let reused of this.pc.getTransceivers())
+					{
+						//If inactive and  not pending or stopped
+						if (reused.receiver.track.kind==trackInfo.getMedia() && reused.direction=="inactive" && !reused.pending && !reused.stopped)
+						{
+							//reuse
+							transceiver = reused;
+							//Set new direction
+							transceiver.direction = "recvonly";
+							//Done
+							break;
+						}
+					}
+					//If we can't reuse
+					if (!transceiver)
+						//Add new recv only transceiver
+						transceiver = this.pc.addTransceiver(trackInfo.getMedia(),{
+							direction : "recvonly"
+						});
 					//Get stream
 					let stream = this.streams[data.streamId];
 					//If not found
@@ -2240,6 +2258,8 @@ class PeerConnectionClient
 					transceiver.trackId = trackInfo.getId();
 					//Store it
 					transceiver.trackInfo = trackInfo;
+					//Set flag
+					transceiver.pending = true;
 					//To be processed
 					this.pending.add(transceiver);
 					break;
@@ -2252,6 +2272,7 @@ class PeerConnectionClient
 						//Is it it?
 						if (transceiver.streamId == data.streamId && transceiver.trackId == data.trackId)
 						{
+							//console.log("-removedtrack "+transceiver.mid);
 							//Stop transceiver
 							transceiver.direction = "inactive";
 							//Remove track
@@ -2263,6 +2284,8 @@ class PeerConnectionClient
 								streams		: transceiver.receiver.streams,
 								transceiver	: transceiver
 							}));
+							//Set flag
+							transceiver.pending = true;
 							//To be processed
 							this.pending.add(transceiver);
 							//Done
@@ -2286,6 +2309,8 @@ class PeerConnectionClient
 			//Nothing to do
 			return;
 		
+		//console.log(">renegotiate");
+		
 		//We are renegotiting, we need the flag as the function is async
 		this.renegotiating = true;
 		
@@ -2296,14 +2321,19 @@ class PeerConnectionClient
 		this.pending = new Set();
 		//Get current transceivers
 		const transceivers = this.pc.getTransceivers();
+		
 		//Create offer
+		//console.log(">createOffer");
 		const offer = await this.pc.createOffer();
+		//console.log("<createOffer");
 		
 		//Update offer
 		offer.sdp = fixLocalSDP(offer.sdp,transceivers);
 		
 		//Set local description
+		//console.log(">setLocalDescription");
 		await this.pc.setLocalDescription(offer);
+		//console.log("<setLocalDescription");
 		
 		//Store previous info
 		const prevInfo = this.localInfo;
@@ -2318,6 +2348,7 @@ class PeerConnectionClient
 		//Procces pending transceivers
 		for (let transceiver of processing)
 		{
+			//console.log("-procesing "+transceiver.mid);
 			//Check if it is a local or remote track
 			if (transceiver.direction==="sendonly")
 			{
@@ -2347,6 +2378,14 @@ class PeerConnectionClient
 					streamId	: transceiver.sender.streamId,
 					trackId		: track.getId()
 				});
+				//Delete stuff
+				delete(transceiver.sender.streamId);
+				delete(transceiver.fixSimulcastEncodings);
+			} else if (transceiver.direction==="inactive" && transceiver.trackInfo) {
+				//Delete stuff
+				delete(transceiver.streamId);
+				delete(transceiver.trackId);
+				delete(transceiver.trackInfo);
 			}
 		}
 		
@@ -2356,13 +2395,22 @@ class PeerConnectionClient
 			this.remoteInfo.addStream(stream);
 		
 		//Set it
+		//console.log(">setRemoteDescription");
 		await this.pc.setRemoteDescription({
 			type	: "answer",
 			sdp	: this.remoteInfo.toString() 
 		});
+		//console.log("<setRemoteDescription");
+		
+		//Procces pending transceivers again
+		for (let transceiver of processing)
+			//Delete flag
+			delete(transceiver.pending);
 		
 		//We are not renegotiting
 		this.renegotiating = false;
+		
+		//console.log("<renegotiate");
 		
 		//If there are new pending
 		if (this.pending.size)
@@ -2397,6 +2445,8 @@ class PeerConnectionClient
 		if ((sendParameters.encodings ? sendParameters.encodings.length : 0 )!==sendEncodings.length)
 			//Store number of simulcast streams to add
 			transceiver.fixSimulcastEncodings = sendEncodings;
+		//Set flag
+		transceiver.pending = true;
 		//Pending to signal
 		this.pending.add(transceiver);
 		//Done
@@ -2408,10 +2458,16 @@ class PeerConnectionClient
 	{
 		//Find transceiver for this
 		for (let transceiver of this.pc.getTransceivers())
+		{
 			//If it is for this sender
 			if (transceiver.sender===sender)
+			{
+				//Set flag
+				transceiver.pending = true;
 				//Add the transceiver to the pending list
 				this.pending.add(transceiver);
+			}
+		}
 		//Remove it 
 		this.pc.removeTrack(sender);
 	}
