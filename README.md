@@ -94,10 +94,12 @@ Factory object used to synchronze with the server.
 
 #### constructor( [transactionManager](https://github.com/medooze/transaction-manager) )
 Creates a new client object.
+
     * transactionManager A transaction manager connected with the server (see [TransactionManager](https://github.com/medooze/transaction-manager) for more info).
     
 #### Promise<PeerConnectionClient> createManagedPeerConnection(options)
 Creates a new managed peer connection client object. 
+	
     * options Same options allowed on the [PeerConnection configuration dictionary](https://www.w3.org/TR/webrtc/#rtcconfiguration-dictionary).
 This will create a new Transport object on the server.
 
@@ -106,18 +108,21 @@ This will create a new Transport object on the server.
 #### Promise< RTCSender > addTrack(track,stream,encodings)
 
 Adds a new track to the client and creates a new IncomingStreamTrack (and IncomingStream if needed) server side.
+
     * track  The track to send
     * stream  The stream to send
-    * encodings  A array of [RTCRtpEncodingParameters](https://www.w3.org/TR/webrtc/#dom-rtcrtpencodingparameters)which can be used for enabling simulcast. If the encodings array is provided it will be set accordingly on the transcevier (on the sender.setParameters if on Firefox) and if it is not supported, it will mangle the SDP for chrome adding the required ssrcs to enable simulcast
+    * encodings  A array of [RTCRtpEncodingParameters](https://www.w3.org/TR/webrtc/#dom-rtcrtpencodingparameters) which can be used for enabling simulcast. If the encodings array is provided it will be set accordingly on the transcevier (on the sender.setParameters if on Firefox) and if it is not supported, it will mangle the SDP for chrome adding the required ssrcs to enable simulcast
     
 #### void removeTrack(sender)
 
 Stops sending the track, will stop the IncomingStreamTrack server side also.
+
     * sender The RTCSender returned on the addTrack
     
 #### Promise< RTCStatsReport > getStats(selector)
  
  Proxy for [TCPeerConnection getStats](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-getstats).
+ 
     * selector See [RTCPeerConnection getStats](tps://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-getstats)
     
 #### void stop()
