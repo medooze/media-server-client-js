@@ -2207,14 +2207,21 @@ class PeerConnectionClient
 		this.onstatsended	= (event) => console.log("onstatsended",event);
 		
 		//Forward events
-		this.pc.ontrack		= (event) => { event.receiver.streams = event.streams; this.ontrack(event); };
+		this.pc.ontrack		= (event) => { 
+			//Store streams from event
+			event.receiver.streams = event.streams; 
+			//Set remote ids
+			event.remoteStreamId = event.transceiver.streamId;
+			event.remoteTrackId  = event.transceiver.trackId;
+			//Re-fire
+			this.ontrack(event); 
+		};
 		this.pc.onstatsended	= (event) => this.onstatsended(event);
 		
 		this.pc.onnegotiationneeded = () => this.renegotiate();
 		
 		//Listen for events
 		this.ns.on("event",(event)=> {
-			//console.log("-remote event",event);
 			//Get event data
 			const data = event.data;
 			//Check event name
@@ -2253,10 +2260,9 @@ class PeerConnectionClient
 						this.streams[data.streamId] = stream = new StreamInfo(data.streamId);
 					//Add track info
 					stream.addTrack(trackInfo);
-					//Add stream if
+					//Store stream and track info
 					transceiver.streamId = data.streamId;
 					transceiver.trackId = trackInfo.getId();
-					//Store it
 					transceiver.trackInfo = trackInfo;
 					//Set flag
 					transceiver.pending = true;
@@ -2272,7 +2278,6 @@ class PeerConnectionClient
 						//Is it it?
 						if (transceiver.streamId == data.streamId && transceiver.trackId == data.trackId)
 						{
-							//console.log("-removedtrack "+transceiver.mid);
 							//Stop transceiver
 							transceiver.direction = "inactive";
 							//Remove track
@@ -2282,7 +2287,9 @@ class PeerConnectionClient
 								receiver	: transceiver.receiver,
 								track		: transceiver.receiver.track,
 								streams		: transceiver.receiver.streams,
-								transceiver	: transceiver
+								transceiver	: transceiver,
+								remoteStreamId	: transceiver.streamId,
+								remoteTrackId	: transceiver.trackId
 							}));
 							//Set flag
 							transceiver.pending = true;
@@ -2309,8 +2316,6 @@ class PeerConnectionClient
 			//Nothing to do
 			return;
 		
-		//console.log(">renegotiate");
-		
 		//We are renegotiting, we need the flag as the function is async
 		this.renegotiating = true;
 		
@@ -2323,17 +2328,13 @@ class PeerConnectionClient
 		const transceivers = this.pc.getTransceivers();
 		
 		//Create offer
-		//console.log(">createOffer");
 		const offer = await this.pc.createOffer();
-		//console.log("<createOffer");
 		
 		//Update offer
 		offer.sdp = fixLocalSDP(offer.sdp,transceivers);
 		
 		//Set local description
-		//console.log(">setLocalDescription");
 		await this.pc.setLocalDescription(offer);
-		//console.log("<setLocalDescription");
 		
 		//Store previous info
 		const prevInfo = this.localInfo;
@@ -2348,7 +2349,6 @@ class PeerConnectionClient
 		//Procces pending transceivers
 		for (let transceiver of processing)
 		{
-			//console.log("-procesing "+transceiver.mid);
 			//Check if it is a local or remote track
 			if (transceiver.direction==="sendonly")
 			{
@@ -2395,12 +2395,10 @@ class PeerConnectionClient
 			this.remoteInfo.addStream(stream);
 		
 		//Set it
-		//console.log(">setRemoteDescription");
 		await this.pc.setRemoteDescription({
 			type	: "answer",
 			sdp	: this.remoteInfo.toString() 
 		});
-		//console.log("<setRemoteDescription");
 		
 		//Procces pending transceivers again
 		for (let transceiver of processing)
@@ -2409,8 +2407,6 @@ class PeerConnectionClient
 		
 		//We are not renegotiting
 		this.renegotiating = false;
-		
-		//console.log("<renegotiate");
 		
 		//If there are new pending
 		if (this.pending.size)

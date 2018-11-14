@@ -4,7 +4,7 @@
   "description": "Medooze Media Server Client",
   "main": "index.js",
   "scripts": {
-    "dist": "browserify --standalone MediaServerClient lib/MediaServerClient.js -o dist/medooze-media-server-client.js && cp demo/node_modules/transaction-manager/dist/* dist/ && cp dist/* demo/www"
+    "dist": "browserify --standalone MediaServerClient lib/MediaServerClient.js -o dist/medooze-media-server-client.js && cp dist/* demo/www"
   },
   "repository": {
     "type": "git",

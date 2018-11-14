@@ -4,6 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+	"install": "openssl req  -nodes -new -x509  -keyout server.key -out server.cert -subj \"/CN=localhost\"",
+	"postinstall" : "cp node_modules/transaction-manager/dist/* www/"
   },
   "author": "",
   "license": "ISC",

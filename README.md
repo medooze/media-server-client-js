@@ -1,7 +1,9 @@
 # Medooze Media Server Client
+
 This client libray alllows to easily connect to [the Medooze Media Server](https://github.com/medooze/media-server-node) with a simple API.
 
 ## Features
+
 - Automatically sets Unified Plan SDP semantics for chrome
 - Automatically creates a new server side Transport object when a new managed PeerConnection is created by the client
 - Performs SDP offer/answer when a new track is added or removed in either client or server side
@@ -9,6 +11,7 @@ This client libray alllows to easily connect to [the Medooze Media Server](https
 - Perform SDP mangling for enabling simulcast in Chrome
 
  ## Demo
+
  You can find a demo in the `demo` directory. To run it just do:
  
  ```
@@ -134,8 +137,11 @@ Closes local peerconnection and remote transport
 
 #### attribute EventHandler ontrack
   
-Proxy for the [RTCPeerConnection ontrack event handler](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-ontrack).
- 
+Proxy for the [RTCPeerConnection ontrack event handler](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-ontrack). As local ids will not match the remote ids anymore in WebRTC, we have extended the event to make them available:
+
+- `remoteStreamId` The stream id of the OutgoingStream on the server
+- `remoteTrackId`  The track id of the OutgoingStreamTrack on the server
+
 #### attribute EventHandler ontrackended
   
 Event handler for the new ontrackended event. The event fired will be an [RTCTrackEvent](https://www.w3.org/TR/webrtc/#dom-rtctrackevent) with event name `trackended`.
@@ -147,14 +153,18 @@ Proxy for the [RTCPeerConnection onstatsended event handler](https://www.w3.org/
 ## Install
   
 Just create a js bundle and link it in your web app.
+
 ```
 npm i
 npm run-script dist
 ```
+
 The js file will be located on the `dist` directory. Note that you will also need to use the [Transaction Manager library](https://github.com/medooze/transaction-manager).
  
  ## Author
+
  Sergio Garcia Murillo
  
  ## License
+
  MIT
