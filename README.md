@@ -159,6 +159,12 @@ npm i
 npm run-script dist
 ```
 
+You  will need `browserify` to be installed globally, you can do it by:
+
+```
+npm i -g browserify
+```
+
 The js file will be located on the `dist` directory. Note that you will also need to use the [Transaction Manager library](https://github.com/medooze/transaction-manager).
  
  ## Author
