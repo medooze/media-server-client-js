@@ -2291,6 +2291,8 @@ class PeerConnectionClient
 								remoteStreamId	: transceiver.streamId,
 								remoteTrackId	: transceiver.trackId
 							}));
+							//Mark for clean up
+							transceiver.cleanup = true;
 							//Set flag
 							transceiver.pending = true;
 							//To be processed
@@ -2401,8 +2403,9 @@ class PeerConnectionClient
 				//Delete stuff
 				delete(transceiver.sender.streamId);
 				delete(transceiver.fixSimulcastEncodings);
-			} else if (transceiver.direction==="inactive" && transceiver.trackInfo) {
+			} else if (transceiver.direction==="inactive" && transceiver.cleanup) {
 				//Delete stuff
+				delete(transceiver.cleanup);
 				delete(transceiver.streamId);
 				delete(transceiver.trackId);
 				delete(transceiver.trackInfo);
