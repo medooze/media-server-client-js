@@ -31,6 +31,7 @@ function addRemoteTrack(event)
 	
 	//Play it
 	video.autoplay = true;
+	video.playsInline = true;
 	video.play();
 	
 	//Add them
