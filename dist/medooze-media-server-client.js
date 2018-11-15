@@ -2150,8 +2150,8 @@ class MediaServerClient
 		//Get remote sdp
 		const remoteInfo = localInfo.answer(remote);
 		
-		//Set it
-		await pc.setRemoteDescription({
+		//Set it but do not wait so pc can start processing events inmediatelly
+		pc.setRemoteDescription({
 			type	: "answer",
 			sdp	: remoteInfo.toString() 
 		});

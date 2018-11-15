@@ -54,6 +54,8 @@ module.exports = function(request,protocol,endpoint)
 	//LIsten for remotelly created peer connections
 	mngr.on("transport",(transport)=>{
 		
+		transport.dump("/tmp/t.pcap");
+		
 		//Listen for incoming tracks
 		transport.on("incomingtrack",(track,stream)=>{
 			//Get stream id from remote id

@@ -8,7 +8,7 @@ function addRemoteTrack(event)
 	const stream	= event.streams[0];
 	
 	if (!stream)
-		return;
+		return console.log("addRemoteTrack() no stream")
 	stream.oninactive = (event)=>console.log(event);
 	
 	//Check if video is already present
@@ -17,7 +17,7 @@ function addRemoteTrack(event)
 	//Check if already present
 	if (video)
 		//Ignore
-		return;
+		return console.log("addRemoteTrack() video already present for "+stream.id);
 	
 	//Create html stuff
 	const div	= document.createElement("div");
@@ -53,7 +53,7 @@ function removeRemoteTrack(event)
 	//Check if already present
 	if (!div)
 		//Ignore
-		return;
+		return console.log("removeRemoteTrack() video not present for "+stream.id);
 	
 	remoteVideos.removeChild(div);
 	
@@ -113,6 +113,7 @@ function addLocalStream(track,stream)
 	localVideos.append(div);
 	
 	//Start playing
+	video.muted = true;
 	video.autoplay = true;
 	video.play();
 	
