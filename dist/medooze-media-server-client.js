@@ -2356,6 +2356,26 @@ class PeerConnectionClient
 				const mid = transceiver.mid;
 				//Get track for it
 				const track = this.localInfo.getTrackByMediaId(mid);
+				//If we have to override the codec
+				if (transceiver.codecs)
+				{
+					//Get local media
+					const localMedia = this.localInfo.getMediaById(transceiver.mid);
+					//Get remote capabilities
+					const capabilities = this.remote.capabilities[localMedia.getType()];
+					//If got none
+					if (!capabilities)
+						//Skip
+						continue;
+					//Clone capabilities for the media
+					const cloned = Object.assign({},capabilities);
+					//Set codecs
+					cloned.codecs = transceiver.codecs;
+					//Answer it
+					const answer = localMedia.answer(cloned);
+					//Replace media
+					this.remoteInfo.replaceMedia(answer);
+				}
 				//signal it
 				this.ns.event("addedtrack",{
 					streamId	: transceiver.sender.streamId,
@@ -2419,9 +2439,10 @@ class PeerConnectionClient
 		return this.pc.getStats(selector);
 	}
 	
-	async addTrack(track,stream,encodings)
+	async addTrack(track,stream,params)
 	{
-		const sendEncodings = encodings || [];
+		//Get send encodings
+		const sendEncodings = params && params.encodings || [];
 		//Create new transceiver
 		const transceiver = this.pc.addTransceiver(track,{
 			direction	: "sendonly",
@@ -2441,6 +2462,10 @@ class PeerConnectionClient
 		if ((sendParameters.encodings ? sendParameters.encodings.length : 0 )!==sendEncodings.length)
 			//Store number of simulcast streams to add
 			transceiver.fixSimulcastEncodings = sendEncodings;
+		//If we have to override codec
+		if (params && params.codecs)
+			//Set it on transceicer
+			transceiver.codecs = params.codecs;
 		//Set flag
 		transceiver.pending = true;
 		//Pending to signal
@@ -2578,11 +2603,72 @@ function fixLocalSDP(sdp,transceivers)
 		} else {
 			//Nothing
 		}
+		//Remove not usedcodecs
+		if (transceiver.codecs)
+			//For all video codecs
+			for (let codec of ["vp8","vp9","h264"])
+				//If not allowed
+				if (!transceiver.codecs.includes(codec))
+					//Remove it
+					media = removeCodec(media,codec);
 		//Add media to fixed
 		fixed += media;
 	}
 	
 	return fixed;
+}
+
+//From : https://gist.github.com/tnoho/948be984f9981b59df43
+function removeCodec(orgsdp, codec) 
+{
+	const internalFunc = function(sdp) 
+	{
+		const codecre = new RegExp("(a=rtpmap:(\\d*) " + codec + "\/90000\\r\\n)","i");
+		const rtpmaps = sdp.match(codecre);
+		if (rtpmaps == null || rtpmaps.length <= 2)
+			return sdp;
+
+		const rtpmap = rtpmaps[2];
+		let modsdp = sdp.replace(codecre, "");
+
+		const rtcpre = new RegExp("(a=rtcp-fb:" + rtpmap + ".*\r\n)", "g");
+		modsdp = modsdp.replace(rtcpre, "");
+		
+		const fmtpre = new RegExp("(a=fmtp:" + rtpmap + ".*\r\n)", "g");
+		modsdp = modsdp.replace(fmtpre, "");
+		
+		const aptpre = new RegExp("(a=fmtp:(\\d*) apt=" + rtpmap + "\\r\\n)");
+		const aptmaps = modsdp.match(aptpre);
+		let fmtpmap = "";
+		if (aptmaps != null && aptmaps.length >= 3) 
+		{
+			fmtpmap = aptmaps[2];
+			modsdp = modsdp.replace(aptpre, "");
+		
+			const rtppre = new RegExp("(a=rtpmap:" + fmtpmap + ".*\r\n)", "g");
+			modsdp = modsdp.replace(rtppre, "");
+		}
+
+		const videore = /(m=video.*\r\n)/;
+		const videolines = modsdp.match(videore);
+		if (videolines != null) 
+		{
+			//If many m=video are found in SDP, this program doesn"t work.
+			const videoline = videolines[0].substring(0, videolines[0].length - 2);
+			const videoelem = videoline.split(" ");
+			let modvideoline = videoelem[0];
+			for (let i = 1; i < videoelem.length; i++) 
+			{
+				if (videoelem[i] == rtpmap || videoelem[i] == fmtpmap) 
+					continue;
+				modvideoline += " " + videoelem[i];
+			}
+			modvideoline += "\r\n";
+			modsdp = modsdp.replace(videore, modvideoline);
+		}
+		return internalFunc(modsdp);
+	};
+	return internalFunc(orgsdp);
 }
 
 module.exports = PeerConnectionClient;
@@ -4411,13 +4497,41 @@ class SDPInfo
 	 */
 	getMediaById(msid)
 	{
+		//For each media
 		for (let i in this.medias)
 		{
+			//The media
 			let media = this.medias[i];
+			//Check if the same id
 			if (media.getId().toLowerCase()===msid.toLowerCase())
+				//Found
 				return media;
 		}
+		//Not found
 		return null;
+	}
+	
+	/**
+	 * Replace media with same id with the new one
+	 * @param {MediaInfo} media - The new media
+	 * @returns {boolean} true if the media was replaced, false if not found
+	 */
+	replaceMedia(media)
+	{
+		//For each media
+		for (let i in this.medias)
+		{
+			//If it has the same id
+			if (this.medias[i].getId()==media.getId())
+			{
+				//Change it
+				this.medias[i] = media;
+				//Found
+				return true;
+			}
+		}
+		//Not found
+		return false;
 	}
 
 	/**

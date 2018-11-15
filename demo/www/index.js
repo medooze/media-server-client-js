@@ -122,11 +122,59 @@ function addLocalStream(track,stream)
 }
 
 let pc;
+let streams = 0;
 const AudioContext = window.AudioContext || window.webkitAudioContext;
+
+async function sendTrack(simulcast,codecs)
+{
+		//Create new canvas
+		const canvas = createLocalStream(streams++);
+		//Get stream
+		const stream = canvas.captureStream();
+		//Get video track
+		const videoTrack = stream.getVideoTracks()[0];
+
+		//Create audio track
+		var audioContext = new AudioContext();
+		var oscilator = audioContext.createOscillator();
+		var audioTrack = audioContext.createMediaStreamDestination().stream.getAudioTracks()[0];
+
+		//Add to stream
+		stream.addTrack(audioTrack);
+		//Add local video
+		const button = addLocalStream(videoTrack,stream);
+		
+		//The params object
+		const params = {};
+		
+		//If using simulcast
+		if (simulcast)
+			//Add simulcast params
+			params.encodings = [
+				{ rid: "a"},
+				{ rid: "b" , scaleDownResolutionBy: 2.0 },
+				{ rid: "c" , scaleDownResolutionBy: 4.0 }
+			];
+		
+		//If overriding codecs
+		if (codecs)
+			//Set them to params
+			params.codecs = [codecs];
+			
+		//Add to pc
+		const [audioSender,videoSender] = await Promise.all([pc.addTrack(audioTrack,stream),pc.addTrack(videoTrack,stream,params)]);
+
+		//Remove 
+		button.onclick = () => {
+			//Remove without  wait
+			pc.removeTrack(audioSender);
+			pc.removeTrack(videoSender);
+			clearInterval(canvas.timer);
+			localVideos.removeChild(button.parentNode);
+		};
+};
 //Start everything
 window.onload=()=>{
-	let streams = 0;
-	
 	//Connect with websocket
 	const ws = new WebSocket(url);
 	
@@ -147,70 +195,11 @@ window.onload=()=>{
 		pc.ontrackended = removeRemoteTrack;
 		
 		//Add listeneres
-		addTrack.onclick = async ()=>{
-			//Create new canvas
-			const canvas = createLocalStream(streams++);
-			//Get stream
-			const stream = canvas.captureStream();
-			//Get video track
-			const videoTrack = stream.getVideoTracks()[0];
-			
-			//Create audio track
-			var audioContext = new AudioContext();
-			var oscilator = audioContext.createOscillator();
-			var audioTrack = audioContext.createMediaStreamDestination().stream.getAudioTracks()[0];
-			
-			//Add to stream
-			stream.addTrack(audioTrack);
-			//Add local video
-			const button = addLocalStream(videoTrack,stream);
-			//Add to pc
-			const [audioSender,videoSender] = await Promise.all([pc.addTrack(audioTrack,stream),pc.addTrack(videoTrack,stream)]);
-			
-			//Remove 
-			button.onclick = () => {
-				//Remove without  wait
-				pc.removeTrack(audioSender);
-				pc.removeTrack(videoSender);
-				clearInterval(canvas.timer);
-				localVideos.removeChild(button.parentNode);
-			};
-			
-		};
-		
-		addSimulcastTrack.onclick = async ()=>{
-			//Create new canvas
-			const canvas = createLocalStream(streams++);
-			//Get stream
-			const stream = canvas.captureStream();
-			//Get video track
-			const videoTrack = stream.getVideoTracks()[0];
-			
-			//Create audio track
-			var audioContext = new AudioContext();
-			var oscilator = audioContext.createOscillator();
-			var audioTrack = audioContext.createMediaStreamDestination().stream.getAudioTracks()[0];
-			
-			//Add to stream
-			stream.addTrack(audioTrack);
-			//Add local video
-			const button = addLocalStream(videoTrack,stream);
-			
-			//Add to pc
-			const [audioSender,videoSender] = await Promise.all([pc.addTrack(audioTrack,stream),pc.addTrack(videoTrack,stream,[
-				{rid: "a"},
-				{rid: "b"},
-				{rid: "c"}
-			])]);
-			
-			//Remove 
-			button.onclick = () => {
-				//Remove without  wait
-				pc.removeTrack(audioSender);
-				pc.removeTrack(videoSender);
-				clearInterval(canvas.timer);
-				localVideos.removeChild(button.parentNode);
-			};
-		};
+		addTrack.onclick		= ()=> sendTrack();
+		addSimulcastTrack.onclick	= ()=> sendTrack(true);
+		addTrackVP8.onclick		= ()=> sendTrack(false	, "vp8");
+		addSimulcastTrackVP8.onclick	= ()=> sendTrack(true	,"vp8");
+		addTrackH264.onclick		= ()=> sendTrack(false	,"h264");
+		addSimulcastTrackH264.onclick	= ()=> sendTrack(true	,"h264");
 	};
 };
