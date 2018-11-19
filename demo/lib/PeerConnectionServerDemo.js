@@ -36,7 +36,7 @@ const Capabilities = {
 			"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
 			"urn:ietf:params:rtp-hdrext:toffse",
 			"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
-			"urn:ietf:params:rtp-hdrext:sdes:mid"
+			"urn:ietf:params:rtp-hdrext:sdes:mid",
 		],
 		simulcast	: true
 	}
@@ -47,14 +47,14 @@ module.exports = function(request,protocol,endpoint)
 	
 	//Create new transaction manager
 	const tm = new TransactionManager(connection);
-			
+	
 	//Create new managed peerconnection server for this
 	const mngr = endpoint.createPeerConnectionServer(tm,Capabilities);
 	
 	//LIsten for remotelly created peer connections
 	mngr.on("transport",(transport)=>{
 		
-		transport.dump("/tmp/t.pcap");
+		//transport.dump("/tmp/t.pcap");
 		
 		//Listen for incoming tracks
 		transport.on("incomingtrack",(track,stream)=>{
@@ -83,7 +83,7 @@ module.exports = function(request,protocol,endpoint)
 			//Stop transport an recorded
 			transport.stop();
 		});
-	});
+		});
 	
 	//Close on disconnect
 	connection.on("close",() => {

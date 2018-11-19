@@ -2131,18 +2131,21 @@ class MediaServerClient
 		//Create new peer connection
 		const pc = new RTCPeerConnection(cloned);
 
-		//Add reconly transceivers for getting full codec capabilities
-		pc.addTransceiver("audio",{direction: "inactive"});
-		pc.addTransceiver("video",{direction: "inactive"});
+		//Add sendonly transceivers for getting full codec capabilities
+		const audio = pc.addTransceiver("audio",{direction: "sendonly"});
+		const video = pc.addTransceiver("video",{direction: "sendonly"});
+		
+		//Hack for firefox to retrieve all the header extensions
+		try { await video.sender.setParameters({encodings: [{ rid: "a"},{ rid: "b" , scaleDownResolutionBy: 2.0 }]}); } catch(e) {}
 		
 		//Create offer
 		const offer = await pc.createOffer();
 		
-		//Set local description
-		await pc.setLocalDescription(offer);
-		
 		//Parse local info
 		const localInfo = SDPInfo.parse(offer.sdp);
+		
+		//Set local description
+		await pc.setLocalDescription(offer);
 		
 		//Connect
 		const remote = await this.ns.cmd("create",localInfo.plain());
@@ -2161,13 +2164,25 @@ class MediaServerClient
 		//Create namespace for pc
 		const pcns = this.tm.namespace("medooze::pc::"+id);
 		
-		//Done
-		return new PeerConnectionClient({
+		//Disable transceivers
+		audio.direction = "inactive";
+		video.direction = "inactive";
+		
+		//create new managed pc client
+		const client = new PeerConnectionClient({
 			id		: id,
 			ns		: pcns,
 			pc		: pc,
 			remote		: remote
 		});
+		
+		//renegotiate to set transceivers direction to inactive again
+		client.renegotiate();
+		
+		//Done
+		return client;
+		
+		
 	}
 	
 	stop()
@@ -2420,7 +2435,7 @@ class PeerConnectionClient
 		//Set it
 		await this.pc.setRemoteDescription({
 			type	: "answer",
-			sdp	: this.remoteInfo.toString() 
+			sdp	: this.remoteInfo.toString().replace(":recv ",": recv rid=")
 		});
 		
 		//Procces pending transceivers again
