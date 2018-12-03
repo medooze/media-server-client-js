@@ -2433,9 +2433,19 @@ class PeerConnectionClient
 		}
 		
 		//Now add all remote streams 
-		for (let stream of Object.values(this.streams))
+		for (let stream of Object.values(this.streams)) 
+		{
+			//Clone stream
+			const cloned = new StreamInfo(stream.getId());
+			//For each track
+			for (let [trackId,track] of stream.getTracks())
+				//Ensure it has been processed already to avoid having a track without an assigned media id
+				if (track.getMediaId())
+					//Safe to add it back
+					cloned.addTrack(track);
 			//Add it
-			this.remoteInfo.addStream(stream);
+			this.remoteInfo.addStream(cloned);
+		}
 		
 		//Set it
 		await this.pc.setRemoteDescription({
@@ -3701,7 +3711,7 @@ class MediaInfo {
 
 	/**
 	 * Set codec map
-	 * @param {Map<String,CodecInfo> codecs - Map of codec info objecs
+	 * @param {Map<Number,CodecInfo> codecs - Map of codec info objecs
 	 */
 	setCodecs(codecs) {
 		this.codecs = codecs;
@@ -4707,6 +4717,14 @@ class SDPInfo
 	}
 	
 	/**
+	 * Remove all streams
+	 */
+	removeAllStreams()
+	{
+		this.streams.clear();
+	}
+	
+	/**
 	 * 
 	 * @param {String} mid Media Id
 	 * @returns {TrackInfo| Track info
@@ -4719,6 +4737,21 @@ class SDPInfo
 					return track;
 		return null;
 	}
+	
+	/**
+	 * 
+	 * @param {String} mid Media Id
+	 * @returns {TrackInfo| Streaminfo
+	 */
+	getStreamByMediaId(mid)
+	{
+		for (let stream of this.streams.values())
+			for (let [trackId,track] of stream.getTracks())
+				if (track.getMediaId()==mid)
+					return stream;
+		return null;
+	}
+	
 	
 	/**
 	 * Create answer to this SDP
@@ -5128,9 +5161,14 @@ class SDPInfo
 									attribute	: "cname",
 									value		: stream.getId()
 								});
+								md.ssrcs.push({
+									id		: ssrcs[j],
+									attribute	: "msid",
+									value		: stream.getId() + " " + track.getId()
+								});
 							}
 							//Add msid
-							md.msid =  stream.getId() + " " + track.getId();
+							md.msid = stream.getId() + " " + track.getId();
 							//Done
 							break;
 						}
@@ -6401,11 +6439,20 @@ class StreamInfo {
 
 	/*
 	 * Remove a media track from stream
-	 * @param {Sring} trackId - Id of the track to remote
+	 * @param {TrackInfo} trackInfo - Info object from the track
 	 * @returns {TrackInfo} if the track was present on track map or not
 	 */
 	removeTrack(track) {
 		return this.tracks.delete(track.getId());
+	}
+	
+	/*
+	 * Remove a media track from stream
+	 * @param {Sring} trackId - Id of the track to remote
+	 * @returns {TrackInfo} if the track was present on track map or not
+	 */
+	removeTrackById(trackId) {
+		return this.tracks.delete(trackId);
 	}
 	/**
 	 * Get firs track for the media type

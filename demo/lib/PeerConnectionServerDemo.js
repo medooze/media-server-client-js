@@ -54,6 +54,15 @@ module.exports = function(request,protocol,endpoint)
 	//LIsten for remotelly created peer connections
 	mngr.on("transport",(transport)=>{
 		
+		//Get stream
+		let dummy1 = transport.createOutgoingStream("dummy1");
+		//Create ougoing track
+		dummy1.createTrack("video");
+		//Get stream
+		let dummy2 = transport.createOutgoingStream("dummy2");
+		//Create ougoing track
+		dummy2.createTrack("video");
+		
 		//transport.dump("/tmp/t.pcap");
 		
 		//Listen for incoming tracks
@@ -83,7 +92,7 @@ module.exports = function(request,protocol,endpoint)
 			//Stop transport an recorded
 			transport.stop();
 		});
-		});
+	});
 	
 	//Close on disconnect
 	connection.on("close",() => {
