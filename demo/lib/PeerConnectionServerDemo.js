@@ -54,14 +54,12 @@ module.exports = function(request,protocol,endpoint)
 	//LIsten for remotelly created peer connections
 	mngr.on("transport",(transport)=>{
 		
-		//Get stream
+		//Create weird stream to test correct behavieour
 		let dummy1 = transport.createOutgoingStream("dummy1");
 		//Create ougoing track
 		dummy1.createTrack("video");
-		//Get stream
-		let dummy2 = transport.createOutgoingStream("dummy2");
-		//Create ougoing track
-		dummy2.createTrack("video");
+		//Stop it inmediatell
+		dummy1.stop();
 		
 		//transport.dump("/tmp/t.pcap");
 		

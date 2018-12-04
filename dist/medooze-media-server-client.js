@@ -2199,6 +2199,7 @@ const SemanticSDP	= require("semantic-sdp");
 const SDPInfo		= SemanticSDP.SDPInfo;
 const StreamInfo	= SemanticSDP.StreamInfo;
 const TrackInfo		= SemanticSDP.TrackInfo;
+const Direction		= SemanticSDP.Direction;
 
 class PeerConnectionClient
 {
@@ -2215,6 +2216,9 @@ class PeerConnectionClient
 		this.pending = new Set();
 		this.processing = new Set();
 		this.renegotiating = false;
+		
+		//List of tracks to be removed
+		this.removing = new Set();
 		
 		//Dummy events
 		this.ontrack		= (event) => console.log("ontrack",event);
@@ -2287,11 +2291,12 @@ class PeerConnectionClient
 				}
 				case "removedtrack":
 				{
+					let found = false;
 					//Look for the transceiver
 					for (let transceiver of this.pc.getTransceivers())
 					{
-						//Is it it?
-						if (transceiver.streamId == data.streamId && transceiver.trackId == data.trackId)
+						//If the transceiver has been processed
+						if (!transceiver.pending && transceiver.mid && transceiver.streamId == data.streamId && transceiver.trackId == data.trackId)
 						{
 							//Stop transceiver
 							transceiver.direction = "inactive";
@@ -2312,10 +2317,16 @@ class PeerConnectionClient
 							transceiver.pending = true;
 							//To be processed
 							this.pending.add(transceiver);
+							//Found
+							found = true;
 							//Done
 							break;
 						}
 					}
+					//If not found
+					if (!found)
+						//Add it for later
+						this.removing.add(data);
 					break;
 				}
 				case "stopped" :
@@ -2367,7 +2378,7 @@ class PeerConnectionClient
 		for (const transceiver of this.pc.getTransceivers())
 		{
 			//If we have to override the codec
-			if (transceiver.codecs)
+			if (transceiver.codecs && transceiver.mid)
 			{
 				//Get local media
 				const localMedia = this.localInfo.getMediaById(transceiver.mid);
@@ -2447,6 +2458,45 @@ class PeerConnectionClient
 			this.remoteInfo.addStream(cloned);
 		}
 		
+		//Process pending tracks to be removed
+		for (let data of this.removing)
+		{
+			//Look for the transceiver
+			for (let transceiver of this.pc.getTransceivers())
+			{
+				//If the transceiver has been processed
+				if (!transceiver.pending && transceiver.mid && transceiver.streamId == data.streamId && transceiver.trackId == data.trackId)
+				{
+					//Get media 
+					const mediaInfo = this.remoteInfo.getMediaById(transceiver.trackInfo.getMediaId());
+					//Set also same direction
+					mediaInfo.setDirection(Direction.INACTIVE);
+					//Stop transceiver
+					transceiver.direction = "inactive";
+					
+					//Remove track
+					this.streams[transceiver.streamId].removeTrack(transceiver.trackInfo);
+					//Lunch event
+					this.ontrackended(new (RTCTrackEvent || Event)("trackended",{
+						receiver	: transceiver.receiver,
+						track		: transceiver.receiver.track,
+						streams		: transceiver.receiver.streams,
+						transceiver	: transceiver,
+						remoteStreamId	: transceiver.streamId,
+						remoteTrackId	: transceiver.trackId
+					}));
+					//Delete stuff
+					delete(transceiver.streamId);
+					delete(transceiver.trackId);
+					delete(transceiver.trackInfo);
+					//Delete from pending
+					this.removing.delete(data);
+					//Done
+					break;
+				}
+			}
+		}
+		
 		//Set it
 		await this.pc.setRemoteDescription({
 			type	: "answer",
@@ -2462,7 +2512,7 @@ class PeerConnectionClient
 		this.renegotiating = false;
 		
 		//If there are new pending
-		if (this.pending.size)
+		if (this.pending.size || this.removing.size)
 			//Renegotiate again
 			this.renegotiate();
 	}
@@ -2568,15 +2618,15 @@ function fixLocalSDP(sdp,transceivers)
 	let ini = sdp.indexOf("\r\nm=");
 
 	//The fixed sdp
-	let fixed = sdp.substr(0,ini);
+	let fixed = sdp.substr(0,ini!==-1 ? ini+2 : ini);
 
 	//Check if each media info has the appropiate simulcast info
 	for (const transceiver of transceivers)
 	{
 		//Find next m line
-		let end = sdp.indexOf("\r\nm=",ini+1);
+		let end = sdp.indexOf("\r\nm=",ini+4);
 		//Get m line
-		let media = sdp.substring(ini,end!==-1 ? end : undefined);
+		let media = sdp.substring(ini+2,end!==-1 ? end+2  : undefined);
 		//Move to next
 		ini = end;
 
@@ -2661,6 +2711,9 @@ function fixLocalSDP(sdp,transceivers)
 					media = removeCodec(media,codec);
 		//Add media to fixed
 		fixed += media;
+		
+		if (fixed.indexOf("\r\n\r\n")!=-1)
+			throw fixed;
 	}
 	
 	return fixed;
