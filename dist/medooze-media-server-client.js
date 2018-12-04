@@ -2142,16 +2142,13 @@ class MediaServerClient
 		const offer = await pc.createOffer();
 		
 		//Parse local info
-		const localInfo = SDPInfo.parse(offer.sdp);
+		const localInfo = SDPInfo.parse(offer.sdp.replace(": send rid=",":send "));
 		
 		//Set local description
 		await pc.setLocalDescription(offer);
 		
 		//Connect
 		const remote = await this.ns.cmd("create",localInfo.plain());
-		
-		//Get remote sdp
-		const remoteInfo = localInfo.answer(remote);
 		
 		//Get peer connection id
 		const id = remote.id;
@@ -2163,7 +2160,8 @@ class MediaServerClient
 			id		: id,
 			ns		: pcns,
 			pc		: pc,
-			remote		: remote
+			remote		: remote,
+			localInfo	: localInfo
 		});
 	}
 	
@@ -2192,6 +2190,8 @@ class PeerConnectionClient
 		this.ns = params.ns;
 		this.pc = params.pc;
 		this.remote  = params.remote;
+		this.localInfo = params.localInfo;
+		this.remoteInfo = null;
 		this.streams = {};
 		
 		//the list of pending transceivers 
@@ -2389,21 +2389,22 @@ class PeerConnectionClient
 		//Get current transceivers
 		const transceivers = this.pc.getTransceivers();
 		
-		//Create offer
-		const offer = await this.pc.createOffer();
-		
-		//Update offer
-		offer.sdp = fixLocalSDP(offer.sdp,transceivers);
-		
-		//Set local description
-		await this.pc.setLocalDescription(offer);
-		
-		//Store previous info
-		const prevInfo = this.localInfo;
-		
-		//Parse local info 
-		//Firefox uses old simulcast so switch back
-		this.localInfo = SDPInfo.parse(offer.sdp.replace(": send rid=",":send "));
+		//Skip for first SDP O/A as it is done in the MediaServerClient and firefox will fail
+		if (this.pc.signalingState!="have-local-offer")
+		{
+			//Create offer
+			const offer = await this.pc.createOffer();
+
+			//Update offer
+			offer.sdp = fixLocalSDP(offer.sdp,transceivers);
+
+			//Set local description
+			await this.pc.setLocalDescription(offer);
+
+			//Parse local info 
+			//Firefox uses old simulcast so switch back
+			this.localInfo = SDPInfo.parse(offer.sdp.replace(": send rid=",":send "));
+		} 
 		
 		//Get remote sdp
 		this.remoteInfo = this.localInfo.answer(this.remote);
