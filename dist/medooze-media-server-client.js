@@ -2153,36 +2153,18 @@ class MediaServerClient
 		//Get remote sdp
 		const remoteInfo = localInfo.answer(remote);
 		
-		//Set it but do not wait so pc can start processing events inmediatelly
-		pc.setRemoteDescription({
-			type	: "answer",
-			sdp	: remoteInfo.toString() 
-		});
 		//Get peer connection id
 		const id = remote.id;
-		
 		//Create namespace for pc
 		const pcns = this.tm.namespace("medooze::pc::"+id);
 		
-		//Disable transceivers
-		audio.direction = "inactive";
-		video.direction = "inactive";
-		
 		//create new managed pc client
-		const client = new PeerConnectionClient({
+		return new PeerConnectionClient({
 			id		: id,
 			ns		: pcns,
 			pc		: pc,
 			remote		: remote
 		});
-		
-		//renegotiate to set transceivers direction to inactive again
-		client.renegotiate();
-		
-		//Done
-		return client;
-		
-		
 	}
 	
 	stop()
@@ -2217,8 +2199,20 @@ class PeerConnectionClient
 		this.processing = new Set();
 		this.renegotiating = false;
 		
-		//List of tracks to be removed
+		//List of tracks to be removed and added
+		this.adding = new Set();
 		this.removing = new Set();
+		
+		//Disable all existing transceivers
+		for (const transceiver of this.pc.getTransceivers())
+		{
+			//Disable it
+			transceiver.direction = "inactive";
+			//Set flag
+			transceiver.pending = true;
+			//Add to pending
+			this.pending.add(transceiver);
+		}
 		
 		//Dummy events
 		this.ontrack		= (event) => console.log("ontrack",event);
@@ -2228,15 +2222,25 @@ class PeerConnectionClient
 		//Forward events
 		this.pc.ontrack		= (event) => { 
 			//Store streams from event
-			event.receiver.streams = event.streams; 
+			event.transceiver.trackInfo.streams = event.streams; 
 			//Set remote ids
 			event.remoteStreamId = event.transceiver.streamId;
 			event.remoteTrackId  = event.transceiver.trackId;
-			//Re-fire
-			this.ontrack(event); 
+			try {
+				//Re-fire
+				this.ontrack(event); 
+			} catch (e) {
+				console.error(e);
+			};
 		};
-		this.pc.onstatsended	= (event) => this.onstatsended(event);
-		
+		this.pc.onstatsended	= (event) => {
+			try {
+				//Relaunch event
+				this.onstatsended(event);
+			} catch (e) {
+				console.error(e);
+			} 
+		};
 		this.pc.onnegotiationneeded = () => this.renegotiate();
 		
 		//Listen for events
@@ -2248,85 +2252,18 @@ class PeerConnectionClient
 			{
 				case "addedtrack":
 				{
-					let transceiver;
-					//Get track info
-					const trackInfo = TrackInfo.expand(data.track);
-					//Check if we can reuse a transceiver
-					for (let reused of this.pc.getTransceivers())
-					{
-						//If inactive and  not pending or stopped
-						if (reused.receiver.track.kind==trackInfo.getMedia() && reused.direction=="inactive" && !reused.pending && !reused.stopped)
-						{
-							//reuse
-							transceiver = reused;
-							//Set new direction
-							transceiver.direction = "recvonly";
-							//Done
-							break;
-						}
-					}
-					//If we can't reuse
-					if (!transceiver)
-						//Add new recv only transceiver
-						transceiver = this.pc.addTransceiver(trackInfo.getMedia(),{
-							direction : "recvonly"
-						});
-					//Get stream
-					let stream = this.streams[data.streamId];
-					//If not found
-					if (!stream)
-						//Create new one
-						this.streams[data.streamId] = stream = new StreamInfo(data.streamId);
-					//Add track info
-					stream.addTrack(trackInfo);
-					//Store stream and track info
-					transceiver.streamId = data.streamId;
-					transceiver.trackId = trackInfo.getId();
-					transceiver.trackInfo = trackInfo;
-					//Set flag
-					transceiver.pending = true;
-					//To be processed
-					this.pending.add(transceiver);
+					//Add it for later addition
+					this.adding.add(data);
+					//Reneogitate
+					this.renegotiate();
 					break;
 				}
 				case "removedtrack":
 				{
-					let found = false;
-					//Look for the transceiver
-					for (let transceiver of this.pc.getTransceivers())
-					{
-						//If the transceiver has been processed
-						if (!transceiver.pending && transceiver.mid && transceiver.streamId == data.streamId && transceiver.trackId == data.trackId)
-						{
-							//Stop transceiver
-							transceiver.direction = "inactive";
-							//Remove track
-							this.streams[transceiver.streamId].removeTrack(transceiver.trackInfo);
-							//Lunch event
-							this.ontrackended(new (RTCTrackEvent || Event)("trackended",{
-								receiver	: transceiver.receiver,
-								track		: transceiver.receiver.track,
-								streams		: transceiver.receiver.streams,
-								transceiver	: transceiver,
-								remoteStreamId	: transceiver.streamId,
-								remoteTrackId	: transceiver.trackId
-							}));
-							//Mark for clean up
-							transceiver.cleanup = true;
-							//Set flag
-							transceiver.pending = true;
-							//To be processed
-							this.pending.add(transceiver);
-							//Found
-							found = true;
-							//Done
-							break;
-						}
-					}
-					//If not found
-					if (!found)
-						//Add it for later
-						this.removing.add(data);
+					//Add it for later removal
+					this.removing.add(data);
+					//Renegotiate 
+					this.renegotiate();
 					break;
 				}
 				case "stopped" :
@@ -2335,6 +2272,9 @@ class PeerConnectionClient
 					break;
 			}
 		});
+		
+		//Renegotiate now
+		this.renegotiate();
 	}
 	
 	async renegotiate()
@@ -2347,11 +2287,105 @@ class PeerConnectionClient
 		//We are renegotiting, we need the flag as the function is async
 		this.renegotiating = true;
 		
+		//Process addingionts first
+		for (const data of this.adding)
+		{
+			let transceiver;
+			//Get track info
+			const trackInfo = TrackInfo.expand(data.track);
+			//Check if we can reuse a transceiver
+			for (let reused of this.pc.getTransceivers())
+			{
+				//If inactive and  not pending or stopped
+				if (reused.receiver.track.kind==trackInfo.getMedia() && reused.direction=="inactive" && !reused.pending && !reused.stopped)
+				{
+					//reuse
+					transceiver = reused;
+					//Set new direction
+					transceiver.direction = "recvonly";
+					//Done
+					break;
+				}
+			}
+			//If we can't reuse
+			if (!transceiver)
+				//Add new recv only transceiver
+				transceiver = this.pc.addTransceiver(trackInfo.getMedia(),{
+					direction : "recvonly"
+				});
+			//Get stream
+			let stream = this.streams[data.streamId];
+			//If not found
+			if (!stream)
+				//Create new one
+				this.streams[data.streamId] = stream = new StreamInfo(data.streamId);
+			//Add track info
+			stream.addTrack(trackInfo);
+			//Store stream and track info
+			transceiver.streamId = data.streamId;
+			transceiver.trackId = trackInfo.getId();
+			transceiver.trackInfo = trackInfo;
+			//Set flag
+			transceiver.pending = true;
+			//To be processed
+			this.pending.add(transceiver);
+		}
+		//Clear new remote track queue
+		this.adding.clear();
+		
+		//Process pending tracks to be removed
+		for (let data of this.removing)
+		{
+			//Get stream and track
+			const streamInfo = this.streams[data.streamId]; 
+			const trackInfo = streamInfo.getTrack(data.trackId);
+			//Get associated mid
+			const mid = trackInfo.getMediaId();
+			//Look for the transceiver
+			for (let transceiver of this.pc.getTransceivers())
+			{
+				//If the transceiver has been processed
+				if (!transceiver.pending && transceiver.mid && transceiver.mid == mid )
+				{
+					//Deactivate transceiver
+					transceiver.direction = "inactive";
+					//Remove track
+					streamInfo.removeTrack(trackInfo);
+					//If this has no more tracks
+					if (!streamInfo.getTracks().size)
+						//Delete it
+						delete (this.streams[transceiver.streamId]);
+					try{
+						//Launch event
+						this.ontrackended(new (RTCTrackEvent || Event)("trackended",{
+							receiver	: transceiver.receiver,
+							track		: transceiver.receiver.track,
+							streams		: trackInfo.streams,
+							transceiver	: transceiver,
+							remoteStreamId	: streamInfo.getId(),
+							remoteTrackId	: trackInfo.getId()
+						}));
+					} catch (e) {
+						console.error(e);
+					}
+					//Delete stuff
+					delete(transceiver.streamId);
+					delete(transceiver.trackId);
+					delete(transceiver.trackInfo);
+					//Delete from pending
+					this.removing.delete(data);
+					//Done
+					break;
+				}
+			}
+		}
+		
 		//Get the pending transceivers and process them
 		const processing = this.pending;
 		
 		//Create new set, so if a new transceiver is added while renegotiating, it is not lost
 		this.pending = new Set();
+		
 		//Get current transceivers
 		const transceivers = this.pc.getTransceivers();
 		
@@ -2408,12 +2442,14 @@ class PeerConnectionClient
 				//Get mid
 				const mid = transceiver.mid;
 				//Get track for it
-				const track = this.localInfo.getTrackByMediaId(mid);
+				const trackInfo = this.localInfo.getTrackByMediaId(mid);
 				//signal it
 				this.ns.event("addedtrack",{
 					streamId	: transceiver.sender.streamId,
-					track		: track.plain()
+					track		: trackInfo.plain()
 				});
+				//Store in transceiverç
+				transceiver.sender.trackInfo = trackInfo;
 			} else if (transceiver.direction==="recvonly") {
 				//Get mid
 				const mid = transceiver.mid;
@@ -2421,25 +2457,17 @@ class PeerConnectionClient
 				const trackInfo = transceiver.trackInfo;
 				//Assing
 				trackInfo.setMediaId(mid);
-			} else if (transceiver.direction==="inactive" && !transceiver.trackInfo) {
+			} else if (transceiver.direction==="inactive" &&  transceiver.sender && transceiver.sender.trackInfo) {
 				//Get mid
 				const mid = transceiver.mid;
-				//Get previous
-				const track = prevInfo.getTrackByMediaId(mid);
 				//signal it
 				this.ns.event("removedtrack",{
 					streamId	: transceiver.sender.streamId,
-					trackId		: track.getId()
+					trackId		: transceiver.sender.trackInfo.getId()
 				});
 				//Delete stuff
 				delete(transceiver.sender.streamId);
 				delete(transceiver.fixSimulcastEncodings);
-			} else if (transceiver.direction==="inactive" && transceiver.cleanup) {
-				//Delete stuff
-				delete(transceiver.cleanup);
-				delete(transceiver.streamId);
-				delete(transceiver.trackId);
-				delete(transceiver.trackInfo);
 			}
 		}
 		
@@ -2458,45 +2486,6 @@ class PeerConnectionClient
 			this.remoteInfo.addStream(cloned);
 		}
 		
-		//Process pending tracks to be removed
-		for (let data of this.removing)
-		{
-			//Look for the transceiver
-			for (let transceiver of this.pc.getTransceivers())
-			{
-				//If the transceiver has been processed
-				if (!transceiver.pending && transceiver.mid && transceiver.streamId == data.streamId && transceiver.trackId == data.trackId)
-				{
-					//Get media 
-					const mediaInfo = this.remoteInfo.getMediaById(transceiver.trackInfo.getMediaId());
-					//Set also same direction
-					mediaInfo.setDirection(Direction.INACTIVE);
-					//Stop transceiver
-					transceiver.direction = "inactive";
-					
-					//Remove track
-					this.streams[transceiver.streamId].removeTrack(transceiver.trackInfo);
-					//Lunch event
-					this.ontrackended(new (RTCTrackEvent || Event)("trackended",{
-						receiver	: transceiver.receiver,
-						track		: transceiver.receiver.track,
-						streams		: transceiver.receiver.streams,
-						transceiver	: transceiver,
-						remoteStreamId	: transceiver.streamId,
-						remoteTrackId	: transceiver.trackId
-					}));
-					//Delete stuff
-					delete(transceiver.streamId);
-					delete(transceiver.trackId);
-					delete(transceiver.trackInfo);
-					//Delete from pending
-					this.removing.delete(data);
-					//Done
-					break;
-				}
-			}
-		}
-		
 		//Set it
 		await this.pc.setRemoteDescription({
 			type	: "answer",
@@ -2512,7 +2501,7 @@ class PeerConnectionClient
 		this.renegotiating = false;
 		
 		//If there are new pending
-		if (this.pending.size || this.removing.size)
+		if (this.pending.size || this.removing.size || this.adding.size)
 			//Renegotiate again
 			this.renegotiate();
 	}
