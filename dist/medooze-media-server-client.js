@@ -2514,16 +2514,26 @@ class PeerConnectionClient
 	
 	async addTrack(track,stream,params)
 	{
+		let transceiver;
 		//Flag to force a renegotition
 		let force = false;
 		//Get send encodings
 		const sendEncodings = params && params.encodings || [];
-		//Create new transceiver
-		const transceiver = this.pc.addTransceiver(track,{
-			direction	: "sendonly",
-			streams		: stream ? [stream] : [],
-			sendEncodings	: sendEncodings
-		});
+		
+		try {
+			//Create new transceiver
+			transceiver = this.pc.addTransceiver(track,{
+				direction	: "sendonly",
+				streams		: stream ? [stream] : [],
+				sendEncodings	: sendEncodings
+			});
+		} catch (e) {
+			//New chrome launch exception when multiple send encofings are used, so create without them and fix them later
+			transceiver = this.pc.addTransceiver(track,{
+				direction	: "sendonly",
+				streams		: stream ? [stream] : []
+			});
+		}
 		
 		//Add track to sender
 		transceiver.sender.streamId = stream ? stream.id : "-";
