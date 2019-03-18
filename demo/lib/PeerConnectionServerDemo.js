@@ -59,7 +59,19 @@ module.exports = function(request,protocol,endpoint)
 		//Create ougoing track
 		dummy1.createTrack("video");
 		//Stop it inmediatell
-		dummy1.stop();
+//		dummy1.stop();
+//		
+//		let i=0;
+//		const t = setInterval(()=>{
+//			if (i==20)
+//				clearInterval(t);
+//			//Create weird stream to test correct behavieour
+//			let dummy = transport.createOutgoingStream("dummy1"+(i++));
+//			//Create ougoing track
+//			dummy.createTrack("audio");
+//			dummy.createTrack("video");
+//			setTimeout(()=>dummy.stop(),200);
+//		},200);
 		
 		//transport.dump("/tmp/t.pcap");
 		

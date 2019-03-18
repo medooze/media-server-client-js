@@ -2136,7 +2136,7 @@ class MediaServerClient
 		const video = pc.addTransceiver("video",{direction: "sendonly"});
 		
 		//Hack for firefox to retrieve all the header extensions
-		try { await video.sender.setParameters({encodings: [{ rid: "a"},{ rid: "b" , scaleDownResolutionBy: 2.0 }]}); } catch(e) {}
+		try { await video.sender.setParameters({encodings: [{ rid: "a"},{ rid: "b" , scaleResolutionDownBy: 2.0 }]}); } catch(e) {}
 		
 		//Create offer
 		const offer = await pc.createOffer();
@@ -2174,6 +2174,7 @@ class MediaServerClient
 MediaServerClient.SemanticSDP = SemanticSDP;
 
 module.exports = MediaServerClient;
+
 },{"./PeerConnectionClient.js":6,"semantic-sdp":7}],6:[function(require,module,exports){
 const SemanticSDP	= require("semantic-sdp");
 const SDPInfo		= SemanticSDP.SDPInfo;
@@ -2279,6 +2280,8 @@ class PeerConnectionClient
 	
 	async renegotiate()
 	{
+		//Detect simulcast-03 used by firefox
+		let simulcast03 = false;
 		//On chrome negotiation needed is fired multtiple times one per transceiver
 		if (this.renegotiating)
 			//Nothing to do
@@ -2400,6 +2403,9 @@ class PeerConnectionClient
 
 			//Set local description
 			await this.pc.setLocalDescription(offer);
+			
+			//Check if we need to convert to simulcast-03 the answer
+			simulcast03 = offer.sdp.indexOf(": send rid=")!=-1;
 
 			//Parse local info 
 			//Firefox uses old simulcast so switch back
@@ -2490,7 +2496,7 @@ class PeerConnectionClient
 		//Set it
 		await this.pc.setRemoteDescription({
 			type	: "answer",
-			sdp	: this.remoteInfo.toString().replace(":recv ",": recv rid=")
+			sdp	: simulcast03 ? this.remoteInfo.toString().replace(":recv ",": recv rid=") : this.remoteInfo.toString()
 		});
 		
 		//Procces pending transceivers again
@@ -2773,6 +2779,7 @@ function removeCodec(orgsdp, codec)
 }
 
 module.exports = PeerConnectionClient;
+
 },{"semantic-sdp":7}],7:[function(require,module,exports){
 module.exports =
 {
@@ -6998,6 +7005,7 @@ TrackInfo.expand = function(plain)
 };
 
 module.exports = TrackInfo;
+
 },{"./SourceGroupInfo":22,"./TrackEncodingInfo":25}],27:[function(require,module,exports){
 (function (process,global,Buffer){
 'use strict'
