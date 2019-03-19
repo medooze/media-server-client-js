@@ -2410,7 +2410,10 @@ class PeerConnectionClient
 			//Parse local info 
 			//Firefox uses old simulcast so switch back
 			this.localInfo = SDPInfo.parse(offer.sdp.replace(": send rid=",":send "));
-		} 
+		} else {
+			//Check if we need to convert to simulcast-03 the answer
+			simulcast03 = (this.pc.pendingLocalDescription || this.pc.currentLocalDescription).sdp.indexOf(": send rid=")!=-1;
+		}
 		
 		//Get remote sdp
 		this.remoteInfo = this.localInfo.answer(this.remote);
