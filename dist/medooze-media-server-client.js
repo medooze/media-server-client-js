@@ -2194,6 +2194,7 @@ class PeerConnectionClient
 		this.localInfo = params.localInfo;
 		this.remoteInfo = null;
 		this.streams = {};
+		this.strictW3C = false;
 		
 		//the list of pending transceivers 
 		this.pending = new Set();
@@ -2398,20 +2399,26 @@ class PeerConnectionClient
 			//Create offer
 			const offer = await this.pc.createOffer();
 
-			//Update offer
-			offer.sdp = fixLocalSDP(offer.sdp,transceivers);
+			//HACK: SDP mungling and codec enforcement
+			if (!this.strictW3C)
+				//Update offer
+				offer.sdp = fixLocalSDP(offer.sdp,transceivers);
 
 			//Set local description
 			await this.pc.setLocalDescription(offer);
 			
-			//Check if we need to convert to simulcast-03 the answer
-			simulcast03 = offer.sdp.indexOf(": send rid=")!=-1;
+			//HACK: for firefox
+			if (!this.strictW3C)
+				//Check if we need to convert to simulcast-03 the answer
+				simulcast03 = offer.sdp.indexOf(": send rid=")!=-1;
 
+			//HACK: Firefox uses old simulcast so switch back
+			const sdp = simulcast03 ? offer.sdp.replace(": send rid=",":send ") : offer.sdp;
+			
 			//Parse local info 
-			//Firefox uses old simulcast so switch back
-			this.localInfo = SDPInfo.parse(offer.sdp.replace(": send rid=",":send "));
+			this.localInfo = SDPInfo.parse(sdp);
 		} else {
-			//Check if we need to convert to simulcast-03 the answer
+			//HACK: for firefox. Check if we need to convert to simulcast-03 the answer
 			simulcast03 = (this.pc.pendingLocalDescription || this.pc.currentLocalDescription).sdp.indexOf(": send rid=")!=-1;
 		}
 		
@@ -2537,6 +2544,11 @@ class PeerConnectionClient
 				sendEncodings	: sendEncodings
 			});
 		} catch (e) {
+			//HACK: old crhome
+			if (this.strictW3C)
+				//Retrow
+				throw e;
+			
 			//New chrome launch exception when multiple send encofings are used, so create without them and fix them later
 			transceiver = this.pc.addTransceiver(track,{
 				direction	: "sendonly",
@@ -2548,7 +2560,7 @@ class PeerConnectionClient
 		transceiver.sender.streamId = stream ? stream.id : "-";
 		
 		//Hack for firefox as it doesn't support enabling simulcast on addTransceiver but on sender.setParameters
-		try { 
+		if (!this.strictW3C) try { 
 			//If doing simulcast
 			if (sendEncodings.length)
 				//Set simuclast stuff
@@ -2558,16 +2570,22 @@ class PeerConnectionClient
 		} catch(e) {
 		}
 		
-		//Get send params
-		const sendParameters = transceiver.sender.getParameters();
-		//Check if we need to fix simulcast info
-		if ((sendParameters.encodings ? sendParameters.encodings.length : 0 )!==sendEncodings.length)
-			//Store number of simulcast streams to add
-			transceiver.fixSimulcastEncodings = sendEncodings;
+		//HACK: SDP mungling && codec override
+		if (!this.strictW3C)
+		{
+			//Get send params
+			const sendParameters = transceiver.sender.getParameters();
+			//Check if we need to fix simulcast info
+			if ((sendParameters.encodings ? sendParameters.encodings.length : 0 )!==sendEncodings.length)
+				//Store number of simulcast streams to add
+				transceiver.fixSimulcastEncodings = sendEncodings;
+			
+		}
 		//If we have to override codec
 		if (params && params.codecs)
 			//Set it on transceicer
 			transceiver.codecs = params.codecs;
+		
 		//Set flag
 		transceiver.pending = true;
 		//Pending to signal
@@ -2640,7 +2658,7 @@ function fixLocalSDP(sdp,transceivers)
 		ini = end;
 
 		//Check if we need to fix the simuclast info
-		const fixSimulcastEncodings = transceiver.fixSimulcastEncodings;
+		const fixSimulcastEncodings = transceiver.fixSimulcastEncodings ? transceiver.fixSimulcastEncodings.sort((a,b)=>{ return (b.scaleResolutionDownBy||1) - (a.scaleResolutionDownBy||1);}) : null;
 
 		//Do we need to do sdp mangling?
 		if (fixSimulcastEncodings && !fixSimulcastEncodings.inited)
