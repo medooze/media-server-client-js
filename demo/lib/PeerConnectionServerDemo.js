@@ -20,7 +20,7 @@ const Capabilities = {
 		codecs		: ["opus"],
 	},
 	video : {
-		codecs		: ["vp8","h264"],
+		codecs		: ["vp8","h264;packetization-mode=1;profile-level-id=42e01f"],
 		rtx		: true,
 		rtcpfbs		: [
 			{ "id": "goog-remb"},

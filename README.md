@@ -109,6 +109,10 @@ Creates a new managed peer connection client object.
 	
 - `options` Same options allowed on the [PeerConnection configuration dictionary](https://www.w3.org/TR/webrtc/#rtcconfiguration-dictionary).
 
+Addintionaly the following options can be used:
+- `options.forceSDPMunging` Do always SDP munging for setting up simulcast on Chrome
+- `options.strictW3C` Force strict W3C api compatibility (disables hacks)
+
 This will create a new Transport object on the server.
 
 ### PeerConnectionClient
