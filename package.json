@@ -17,6 +17,7 @@
   },
   "homepage": "https://github.com/medooze/media-server-client-js#readme",
   "dependencies": {
-    "semantic-sdp": "^3"
+    "semantic-sdp": "^3",
+    "transaction-manager": "^2.1.2"
   }
 }
