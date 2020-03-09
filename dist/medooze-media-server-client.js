@@ -2157,13 +2157,14 @@ class MediaServerClient
 		
 		//create new managed pc client
 		return new PeerConnectionClient({
-			id		: id,
-			ns		: pcns,
-			pc		: pc,
-			remote		: remote,
-			localInfo	: localInfo,
-			strictW3C	: options && options.strictW3C,
-			forceSDPMunging : options && options.forceSDPMunging
+			id			: id,
+			ns			: pcns,
+			pc			: pc,
+			remote			: remote,
+			localInfo		: localInfo,
+			strictW3C		: options && options.strictW3C,
+			forceSDPMunging		: options && options.forceSDPMunging,
+			forceRenegotiation	: !(options && options.strictW3C)
 		});
 	}
 	
@@ -2198,6 +2199,7 @@ class PeerConnectionClient
 		this.streams = {};
 		this.strictW3C = params.strictW3C;
 		this.forceSDPMunging = params.forceSDPMunging;
+		this.forceRenegotiation = params.forceRenegotiation;
 		
 		//the list of pending transceivers 
 		this.pending = new Set();
@@ -2572,7 +2574,7 @@ class PeerConnectionClient
 	{
 		let transceiver;
 		//Flag to force a renegotition
-		let force = false;
+		let force = this.forceRenegotiation;
 		//Get send encodings
 		const sendEncodings = params && params.encodings || [];
 		
@@ -2854,6 +2856,14 @@ module.exports = PeerConnectionClient;
 (function (process,global){
 'use strict'
 
+// limit of Crypto.getRandomValues()
+// https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues
+var MAX_BYTES = 65536
+
+// Node supports requesting up to this number of bytes
+// https://github.com/nodejs/node/blob/master/lib/internal/crypto/random.js#L48
+var MAX_UINT32 = 4294967295
+
 function oldBrowser () {
   throw new Error('Secure random number generation is not supported by this browser.\nUse Chrome, Firefox or Internet Explorer 11')
 }
@@ -2869,18 +2879,22 @@ if (crypto && crypto.getRandomValues) {
 
 function randomBytes (size, cb) {
   // phantomjs needs to throw
-  if (size > 65536) throw new Error('requested too many random bytes')
-  // in case browserify  isn't using the Uint8Array version
-  var rawBytes = new global.Uint8Array(size)
+  if (size > MAX_UINT32) throw new RangeError('requested too many random bytes')
 
-  // This will not work in older browsers.
-  // See https://developer.mozilla.org/en-US/docs/Web/API/window.crypto.getRandomValues
+  var bytes = Buffer.allocUnsafe(size)
+
   if (size > 0) {  // getRandomValues fails on IE if size == 0
-    crypto.getRandomValues(rawBytes)
+    if (size > MAX_BYTES) { // this is the max bytes crypto.getRandomValues
+      // can do at once see https://developer.mozilla.org/en-US/docs/Web/API/window.crypto.getRandomValues
+      for (var generated = 0; generated < size; generated += MAX_BYTES) {
+        // buffer.slice automatically checks if the end is past the end of
+        // the buffer so we don't have to here
+        crypto.getRandomValues(bytes.slice(generated, generated + MAX_BYTES))
+      }
+    } else {
+      crypto.getRandomValues(bytes)
+    }
   }
-
-  // XXX: phantomjs doesn't like a buffer being passed here
-  var bytes = Buffer.from(rawBytes.buffer)
 
   if (typeof cb === 'function') {
     return process.nextTick(function () {
@@ -2914,6 +2928,8 @@ if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow)
 function SafeBuffer (arg, encodingOrOffset, length) {
   return Buffer(arg, encodingOrOffset, length)
 }
+
+SafeBuffer.prototype = Object.create(Buffer.prototype)
 
 // Copy static methods from Buffer
 copyProps(Buffer, SafeBuffer)
@@ -2962,7 +2978,8 @@ var grammar = module.exports = {
     name: 'version',
     reg: /^(\d*)$/
   }],
-  o: [{ //o=- 20518 0 IN IP4 203.0.113.1
+  o: [{
+    // o=- 20518 0 IN IP4 203.0.113.1
     // NB: sessionId will be a String in most cases because it is huge
     name: 'origin',
     reg: /^(\S*) (\d*) (\d*) (\S*) IP(\d) (\S*)/,
@@ -2975,158 +2992,199 @@ var grammar = module.exports = {
   u: [{ name: 'uri' }],
   e: [{ name: 'email' }],
   p: [{ name: 'phone' }],
-  z: [{ name: 'timezones' }], // TODO: this one can actually be parsed properly..
+  z: [{ name: 'timezones' }], // TODO: this one can actually be parsed properly...
   r: [{ name: 'repeats' }],   // TODO: this one can also be parsed properly
-  //k: [{}], // outdated thing ignored
-  t: [{ //t=0 0
+  // k: [{}], // outdated thing ignored
+  t: [{
+    // t=0 0
     name: 'timing',
     reg: /^(\d*) (\d*)/,
     names: ['start', 'stop'],
     format: '%d %d'
   }],
-  c: [{ //c=IN IP4 10.47.197.26
+  c: [{
+    // c=IN IP4 10.47.197.26
     name: 'connection',
     reg: /^IN IP(\d) (\S*)/,
     names: ['version', 'ip'],
     format: 'IN IP%d %s'
   }],
-  b: [{ //b=AS:4000
+  b: [{
+    // b=AS:4000
     push: 'bandwidth',
     reg: /^(TIAS|AS|CT|RR|RS):(\d*)/,
     names: ['type', 'limit'],
     format: '%s:%s'
   }],
-  m: [{ //m=video 51744 RTP/AVP 126 97 98 34 31
+  m: [{
+    // m=video 51744 RTP/AVP 126 97 98 34 31
     // NB: special - pushes to session
     // TODO: rtp/fmtp should be filtered by the payloads found here?
-    reg: /^(\w*) (\d*) ([\w\/]*)(?: (.*))?/,
+    reg: /^(\w*) (\d*) ([\w/]*)(?: (.*))?/,
     names: ['type', 'port', 'protocol', 'payloads'],
     format: '%s %d %s %s'
   }],
   a: [
-    { //a=rtpmap:110 opus/48000/2
+    {
+      // a=rtpmap:110 opus/48000/2
       push: 'rtp',
-      reg: /^rtpmap:(\d*) ([\w\-\.]*)(?:\s*\/(\d*)(?:\s*\/(\S*))?)?/,
+      reg: /^rtpmap:(\d*) ([\w\-.]*)(?:\s*\/(\d*)(?:\s*\/(\S*))?)?/,
       names: ['payload', 'codec', 'rate', 'encoding'],
       format: function (o) {
-        return (o.encoding) ?
-          'rtpmap:%d %s/%s/%s':
-          o.rate ?
-          'rtpmap:%d %s/%s':
-          'rtpmap:%d %s';
+        return (o.encoding)
+          ? 'rtpmap:%d %s/%s/%s'
+          : o.rate
+            ? 'rtpmap:%d %s/%s'
+            : 'rtpmap:%d %s';
       }
     },
-    { //a=fmtp:108 profile-level-id=24;object=23;bitrate=64000
-      //a=fmtp:111 minptime=10; useinbandfec=1
+    {
+      // a=fmtp:108 profile-level-id=24;object=23;bitrate=64000
+      // a=fmtp:111 minptime=10; useinbandfec=1
       push: 'fmtp',
       reg: /^fmtp:(\d*) ([\S| ]*)/,
       names: ['payload', 'config'],
       format: 'fmtp:%d %s'
     },
-    { //a=control:streamid=0
+    {
+      // a=control:streamid=0
       name: 'control',
       reg: /^control:(.*)/,
       format: 'control:%s'
     },
-    { //a=rtcp:65179 IN IP4 193.84.77.194
+    {
+      // a=rtcp:65179 IN IP4 193.84.77.194
       name: 'rtcp',
       reg: /^rtcp:(\d*)(?: (\S*) IP(\d) (\S*))?/,
       names: ['port', 'netType', 'ipVer', 'address'],
       format: function (o) {
-        return (o.address != null) ?
-          'rtcp:%d %s IP%d %s':
-          'rtcp:%d';
+        return (o.address != null)
+          ? 'rtcp:%d %s IP%d %s'
+          : 'rtcp:%d';
       }
     },
-    { //a=rtcp-fb:98 trr-int 100
+    {
+      // a=rtcp-fb:98 trr-int 100
       push: 'rtcpFbTrrInt',
       reg: /^rtcp-fb:(\*|\d*) trr-int (\d*)/,
       names: ['payload', 'value'],
       format: 'rtcp-fb:%d trr-int %d'
     },
-    { //a=rtcp-fb:98 nack rpsi
+    {
+      // a=rtcp-fb:98 nack rpsi
       push: 'rtcpFb',
       reg: /^rtcp-fb:(\*|\d*) ([\w-_]*)(?: ([\w-_]*))?/,
       names: ['payload', 'type', 'subtype'],
       format: function (o) {
-        return (o.subtype != null) ?
-          'rtcp-fb:%s %s %s':
-          'rtcp-fb:%s %s';
+        return (o.subtype != null)
+          ? 'rtcp-fb:%s %s %s'
+          : 'rtcp-fb:%s %s';
       }
     },
-    { //a=extmap:2 urn:ietf:params:rtp-hdrext:toffset
-      //a=extmap:1/recvonly URI-gps-string
+    {
+      // a=extmap:2 urn:ietf:params:rtp-hdrext:toffset
+      // a=extmap:1/recvonly URI-gps-string
+      // a=extmap:3 urn:ietf:params:rtp-hdrext:encrypt urn:ietf:params:rtp-hdrext:smpte-tc 25@600/24
       push: 'ext',
-      reg: /^extmap:(\d+)(?:\/(\w+))? (\S*)(?: (\S*))?/,
-      names: ['value', 'direction', 'uri', 'config'],
+      reg: /^extmap:(\d+)(?:\/(\w+))?(?: (urn:ietf:params:rtp-hdrext:encrypt))? (\S*)(?: (\S*))?/,
+      names: ['value', 'direction', 'encrypt-uri', 'uri', 'config'],
       format: function (o) {
-        return 'extmap:%d' + (o.direction ? '/%s' : '%v') + ' %s' + (o.config ? ' %s' : '');
+        return (
+          'extmap:%d' +
+          (o.direction ? '/%s' : '%v') +
+          (o['encrypt-uri'] ? ' %s' : '%v') +
+          ' %s' +
+          (o.config ? ' %s' : '')
+        );
       }
     },
-    { //a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:PS1uQCVeeCFCanVmcjkpPywjNWhcYD0mXXtxaVBR|2^20|1:32
+    {
+      // a=extmap-allow-mixed
+      name: 'extmapAllowMixed',
+      reg: /^(extmap-allow-mixed)/
+    },
+    {
+      // a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:PS1uQCVeeCFCanVmcjkpPywjNWhcYD0mXXtxaVBR|2^20|1:32
       push: 'crypto',
       reg: /^crypto:(\d*) ([\w_]*) (\S*)(?: (\S*))?/,
       names: ['id', 'suite', 'config', 'sessionConfig'],
       format: function (o) {
-        return (o.sessionConfig != null) ?
-          'crypto:%d %s %s %s':
-          'crypto:%d %s %s';
+        return (o.sessionConfig != null)
+          ? 'crypto:%d %s %s %s'
+          : 'crypto:%d %s %s';
       }
     },
-    { //a=setup:actpass
+    {
+      // a=setup:actpass
       name: 'setup',
       reg: /^setup:(\w*)/,
       format: 'setup:%s'
     },
-    { //a=mid:1
+    {
+      // a=connection:new
+      name: 'connectionType',
+      reg: /^connection:(new|existing)/,
+      format: 'connection:%s'
+    },
+    {
+      // a=mid:1
       name: 'mid',
       reg: /^mid:([^\s]*)/,
       format: 'mid:%s'
     },
-    { //a=msid:0c8b064d-d807-43b4-b434-f92a889d8587 98178685-d409-46e0-8e16-7ef0db0db64a
+    {
+      // a=msid:0c8b064d-d807-43b4-b434-f92a889d8587 98178685-d409-46e0-8e16-7ef0db0db64a
       name: 'msid',
       reg: /^msid:(.*)/,
       format: 'msid:%s'
     },
-    { //a=ptime:20
+    {
+      // a=ptime:20
       name: 'ptime',
-      reg: /^ptime:(\d*)/,
+      reg: /^ptime:(\d*(?:\.\d*)*)/,
       format: 'ptime:%d'
     },
-    { //a=maxptime:60
+    {
+      // a=maxptime:60
       name: 'maxptime',
-      reg: /^maxptime:(\d*)/,
+      reg: /^maxptime:(\d*(?:\.\d*)*)/,
       format: 'maxptime:%d'
     },
-    { //a=sendrecv
+    {
+      // a=sendrecv
       name: 'direction',
       reg: /^(sendrecv|recvonly|sendonly|inactive)/
     },
-    { //a=ice-lite
+    {
+      // a=ice-lite
       name: 'icelite',
       reg: /^(ice-lite)/
     },
-    { //a=ice-ufrag:F7gI
+    {
+      // a=ice-ufrag:F7gI
       name: 'iceUfrag',
       reg: /^ice-ufrag:(\S*)/,
       format: 'ice-ufrag:%s'
     },
-    { //a=ice-pwd:x9cml/YzichV2+XlhiMu8g
+    {
+      // a=ice-pwd:x9cml/YzichV2+XlhiMu8g
       name: 'icePwd',
       reg: /^ice-pwd:(\S*)/,
       format: 'ice-pwd:%s'
     },
-    { //a=fingerprint:SHA-1 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33
+    {
+      // a=fingerprint:SHA-1 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33
       name: 'fingerprint',
       reg: /^fingerprint:(\S*) (\S*)/,
       names: ['type', 'hash'],
       format: 'fingerprint:%s %s'
     },
-    { //a=candidate:0 1 UDP 2113667327 203.0.113.1 54400 typ host
-      //a=candidate:1162875081 1 udp 2113937151 192.168.34.75 60017 typ host generation 0 network-id 3 network-cost 10
-      //a=candidate:3289912957 2 udp 1845501695 193.84.77.194 60017 typ srflx raddr 192.168.34.75 rport 60017 generation 0 network-id 3 network-cost 10
-      //a=candidate:229815620 1 tcp 1518280447 192.168.150.19 60017 typ host tcptype active generation 0 network-id 3 network-cost 10
-      //a=candidate:3289912957 2 tcp 1845501695 193.84.77.194 60017 typ srflx raddr 192.168.34.75 rport 60017 tcptype passive generation 0 network-id 3 network-cost 10
+    {
+      // a=candidate:0 1 UDP 2113667327 203.0.113.1 54400 typ host
+      // a=candidate:1162875081 1 udp 2113937151 192.168.34.75 60017 typ host generation 0 network-id 3 network-cost 10
+      // a=candidate:3289912957 2 udp 1845501695 193.84.77.194 60017 typ srflx raddr 192.168.34.75 rport 60017 generation 0 network-id 3 network-cost 10
+      // a=candidate:229815620 1 tcp 1518280447 192.168.150.19 60017 typ host tcptype active generation 0 network-id 3 network-cost 10
+      // a=candidate:3289912957 2 tcp 1845501695 193.84.77.194 60017 typ srflx raddr 192.168.34.75 rport 60017 tcptype passive generation 0 network-id 3 network-cost 10
       push:'candidates',
       reg: /^candidate:(\S*) (\d*) (\S*) (\d*) (\S*) (\d*) typ (\S*)(?: raddr (\S*) rport (\d*))?(?: tcptype (\S*))?(?: generation (\d*))?(?: network-id (\d*))?(?: network-cost (\d*))?/,
       names: ['foundation', 'component', 'transport', 'priority', 'ip', 'port', 'type', 'raddr', 'rport', 'tcptype', 'generation', 'network-id', 'network-cost'],
@@ -3147,21 +3205,25 @@ var grammar = module.exports = {
         return str;
       }
     },
-    { //a=end-of-candidates (keep after the candidates line for readability)
+    {
+      // a=end-of-candidates (keep after the candidates line for readability)
       name: 'endOfCandidates',
       reg: /^(end-of-candidates)/
     },
-    { //a=remote-candidates:1 203.0.113.1 54400 2 203.0.113.1 54401 ...
+    {
+      // a=remote-candidates:1 203.0.113.1 54400 2 203.0.113.1 54401 ...
       name: 'remoteCandidates',
       reg: /^remote-candidates:(.*)/,
       format: 'remote-candidates:%s'
     },
-    { //a=ice-options:google-ice
+    {
+      // a=ice-options:google-ice
       name: 'iceOptions',
       reg: /^ice-options:(\S*)/,
       format: 'ice-options:%s'
     },
-    { //a=ssrc:2566107569 cname:t9YU8M1UxTF8Y1A1
+    {
+      // a=ssrc:2566107569 cname:t9YU8M1UxTF8Y1A1
       push: 'ssrcs',
       reg: /^ssrc:(\d*) ([\w_-]*)(?::(.*))?/,
       names: ['id', 'attribute', 'value'],
@@ -3176,50 +3238,58 @@ var grammar = module.exports = {
         return str;
       }
     },
-    { //a=ssrc-group:FEC 1 2
-      //a=ssrc-group:FEC-FR 3004364195 1080772241
+    {
+      // a=ssrc-group:FEC 1 2
+      // a=ssrc-group:FEC-FR 3004364195 1080772241
       push: 'ssrcGroups',
       // token-char = %x21 / %x23-27 / %x2A-2B / %x2D-2E / %x30-39 / %x41-5A / %x5E-7E
       reg: /^ssrc-group:([\x21\x23\x24\x25\x26\x27\x2A\x2B\x2D\x2E\w]*) (.*)/,
       names: ['semantics', 'ssrcs'],
       format: 'ssrc-group:%s %s'
     },
-    { //a=msid-semantic: WMS Jvlam5X3SX1OP6pn20zWogvaKJz5Hjf9OnlV
+    {
+      // a=msid-semantic: WMS Jvlam5X3SX1OP6pn20zWogvaKJz5Hjf9OnlV
       name: 'msidSemantic',
       reg: /^msid-semantic:\s?(\w*) (\S*)/,
       names: ['semantic', 'token'],
       format: 'msid-semantic: %s %s' // space after ':' is not accidental
     },
-    { //a=group:BUNDLE audio video
+    {
+      // a=group:BUNDLE audio video
       push: 'groups',
       reg: /^group:(\w*) (.*)/,
       names: ['type', 'mids'],
       format: 'group:%s %s'
     },
-    { //a=rtcp-mux
+    {
+      // a=rtcp-mux
       name: 'rtcpMux',
       reg: /^(rtcp-mux)/
     },
-    { //a=rtcp-rsize
+    {
+      // a=rtcp-rsize
       name: 'rtcpRsize',
       reg: /^(rtcp-rsize)/
     },
-    { //a=sctpmap:5000 webrtc-datachannel 1024
+    {
+      // a=sctpmap:5000 webrtc-datachannel 1024
       name: 'sctpmap',
-      reg: /^sctpmap:([\w_\/]*) (\S*)(?: (\S*))?/,
+      reg: /^sctpmap:([\w_/]*) (\S*)(?: (\S*))?/,
       names: ['sctpmapNumber', 'app', 'maxMessageSize'],
       format: function (o) {
-        return (o.maxMessageSize != null) ?
-          'sctpmap:%s %s %s' :
-          'sctpmap:%s %s';
+        return (o.maxMessageSize != null)
+          ? 'sctpmap:%s %s %s'
+          : 'sctpmap:%s %s';
       }
     },
-    { //a=x-google-flag:conference
+    {
+      // a=x-google-flag:conference
       name: 'xGoogleFlag',
       reg: /^x-google-flag:([^\s]*)/,
       format: 'x-google-flag:%s'
     },
-    { //a=rid:1 send max-width=1280;max-height=720;max-fps=30;depend=0
+    {
+      // a=rid:1 send max-width=1280;max-height=720;max-fps=30;depend=0
       push: 'rids',
       reg: /^rid:([\d\w]+) (\w+)(?: ([\S| ]*))?/,
       names: ['id', 'direction', 'params'],
@@ -3227,16 +3297,17 @@ var grammar = module.exports = {
         return (o.params) ? 'rid:%s %s %s' : 'rid:%s %s';
       }
     },
-    { //a=imageattr:97 send [x=800,y=640,sar=1.1,q=0.6] [x=480,y=320] recv [x=330,y=250]
-      //a=imageattr:* send [x=800,y=640] recv *
-      //a=imageattr:100 recv [x=320,y=240]
+    {
+      // a=imageattr:97 send [x=800,y=640,sar=1.1,q=0.6] [x=480,y=320] recv [x=330,y=250]
+      // a=imageattr:* send [x=800,y=640] recv *
+      // a=imageattr:100 recv [x=320,y=240]
       push: 'imageattrs',
       reg: new RegExp(
-        //a=imageattr:97
+        // a=imageattr:97
         '^imageattr:(\\d+|\\*)' +
-        //send [x=800,y=640,sar=1.1,q=0.6] [x=480,y=320]
+        // send [x=800,y=640,sar=1.1,q=0.6] [x=480,y=320]
         '[\\s\\t]+(send|recv)[\\s\\t]+(\\*|\\[\\S+\\](?:[\\s\\t]+\\[\\S+\\])*)' +
-        //recv [x=330,y=250]
+        // recv [x=330,y=250]
         '(?:[\\s\\t]+(recv|send)[\\s\\t]+(\\*|\\[\\S+\\](?:[\\s\\t]+\\[\\S+\\])*))?'
       ),
       names: ['pt', 'dir1', 'attrs1', 'dir2', 'attrs2'],
@@ -3244,17 +3315,18 @@ var grammar = module.exports = {
         return 'imageattr:%s %s %s' + (o.dir2 ? ' %s %s' : '');
       }
     },
-    { //a=simulcast:send 1,2,3;~4,~5 recv 6;~7,~8
-      //a=simulcast:recv 1;4,5 send 6;7
+    {
+      // a=simulcast:send 1,2,3;~4,~5 recv 6;~7,~8
+      // a=simulcast:recv 1;4,5 send 6;7
       name: 'simulcast',
       reg: new RegExp(
-        //a=simulcast:
+        // a=simulcast:
         '^simulcast:' +
-        //send 1,2,3;~4,~5
+        // send 1,2,3;~4,~5
         '(send|recv) ([a-zA-Z0-9\\-_~;,]+)' +
-        //space + recv 6;~7,~8
+        // space + recv 6;~7,~8
         '(?:\\s?(send|recv) ([a-zA-Z0-9\\-_~;,]+))?' +
-        //end
+        // end
         '$'
       ),
       names: ['dir1', 'list1', 'dir2', 'list2'],
@@ -3262,34 +3334,121 @@ var grammar = module.exports = {
         return 'simulcast:%s %s' + (o.dir2 ? ' %s %s' : '');
       }
     },
-    { //Old simulcast draft 03 (implemented by Firefox)
-      //  https://tools.ietf.org/html/draft-ietf-mmusic-sdp-simulcast-03
-      //a=simulcast: recv pt=97;98 send pt=97
-      //a=simulcast: send rid=5;6;7 paused=6,7
+    {
+      // old simulcast draft 03 (implemented by Firefox)
+      //   https://tools.ietf.org/html/draft-ietf-mmusic-sdp-simulcast-03
+      // a=simulcast: recv pt=97;98 send pt=97
+      // a=simulcast: send rid=5;6;7 paused=6,7
       name: 'simulcast_03',
       reg: /^simulcast:[\s\t]+([\S+\s\t]+)$/,
       names: ['value'],
       format: 'simulcast: %s'
     },
     {
-      //a=framerate:25
-      //a=framerate:29.97
+      // a=framerate:25
+      // a=framerate:29.97
       name: 'framerate',
       reg: /^framerate:(\d+(?:$|\.\d+))/,
       format: 'framerate:%s'
     },
-    { // RFC4570
-      //a=source-filter: incl IN IP4 239.5.2.31 10.1.15.5
+    {
+      // RFC4570
+      // a=source-filter: incl IN IP4 239.5.2.31 10.1.15.5
       name: 'sourceFilter',
       reg: /^source-filter: *(excl|incl) (\S*) (IP4|IP6|\*) (\S*) (.*)/,
       names: ['filterMode', 'netType', 'addressTypes', 'destAddress', 'srcList'],
       format: 'source-filter: %s %s %s %s %s'
     },
-    { //a=bundle-only
+    {
+      // a=bundle-only
       name: 'bundleOnly',
       reg: /^(bundle-only)/
     },
-    { // any a= that we don't understand is kepts verbatim on media.invalid
+    {
+      // a=label:1
+      name: 'label',
+      reg: /^label:(.+)/,
+      format: 'label:%s'
+    },
+    {
+      // RFC version 26 for SCTP over DTLS
+      // https://tools.ietf.org/html/draft-ietf-mmusic-sctp-sdp-26#section-5
+      name: 'sctpPort',
+      reg: /^sctp-port:(\d+)$/,
+      format: 'sctp-port:%s'
+    },
+    {
+      // RFC version 26 for SCTP over DTLS
+      // https://tools.ietf.org/html/draft-ietf-mmusic-sctp-sdp-26#section-6
+      name: 'maxMessageSize',
+      reg: /^max-message-size:(\d+)$/,
+      format: 'max-message-size:%s'
+    },
+    {
+      // RFC7273
+      // a=ts-refclk:ptp=IEEE1588-2008:39-A7-94-FF-FE-07-CB-D0:37
+      push:'tsRefClocks',
+      reg: /^ts-refclk:([^\s=]*)(?:=(\S*))?/,
+      names: ['clksrc', 'clksrcExt'],
+      format: function (o) {
+        return 'ts-refclk:%s' + (o.clksrcExt != null ? '=%s' : '');
+      }
+    },
+    {
+      // RFC7273
+      // a=mediaclk:direct=963214424
+      name:'mediaClk',
+      reg: /^mediaclk:(?:id=(\S*))? *([^\s=]*)(?:=(\S*))?(?: *rate=(\d+)\/(\d+))?/,
+      names: ['id', 'mediaClockName', 'mediaClockValue', 'rateNumerator', 'rateDenominator'],
+      format: function (o) {
+        var str = 'mediaclk:';
+        str += (o.id != null ? 'id=%s %s' : '%v%s');
+        str += (o.mediaClockValue != null ? '=%s' : '');
+        str += (o.rateNumerator != null ? ' rate=%s' : '');
+        str += (o.rateDenominator != null ? '/%s' : '');
+        return str;
+      }
+    },
+    {
+      // a=keywds:keywords
+      name: 'keywords',
+      reg: /^keywds:(.+)$/,
+      format: 'keywds:%s'
+    },
+    {
+      // a=content:main
+      name: 'content',
+      reg: /^content:(.+)/,
+      format: 'content:%s'
+    },
+    // BFCP https://tools.ietf.org/html/rfc4583
+    {
+      // a=floorctrl:c-s
+      name: 'bfcpFloorCtrl',
+      reg: /^floorctrl:(c-only|s-only|c-s)/,
+      format: 'floorctrl:%s'
+    },
+    {
+      // a=confid:1
+      name: 'bfcpConfId',
+      reg: /^confid:(\d+)/,
+      format: 'confid:%s'
+    },
+    {
+      // a=userid:1
+      name: 'bfcpUserId',
+      reg: /^userid:(\d+)/,
+      format: 'userid:%s'
+    },
+    {
+      // a=floorid:1
+      name: 'bfcpFloorId',
+      reg: /^floorid:(.+) (?:m-stream|mstrm):(.+)/,
+      names: ['id', 'mStream'],
+      format: 'floorid:%s mstrm:%s'
+    },
+    {
+      // any a= that we don't understand is kept verbatim on media.invalid
       push: 'invalid',
       names: ['value']
     }
@@ -3315,8 +3474,8 @@ var writer = require('./writer');
 
 exports.write = writer;
 exports.parse = parser.parse;
-exports.parseFmtpConfig = parser.parseFmtpConfig;
 exports.parseParams = parser.parseParams;
+exports.parseFmtpConfig = parser.parseFmtpConfig; // Alias of parseParams().
 exports.parsePayloads = parser.parsePayloads;
 exports.parseRemoteCandidates = parser.parseRemoteCandidates;
 exports.parseImageAttributes = parser.parseImageAttributes;
@@ -3399,14 +3558,14 @@ var paramReducer = function (acc, expr) {
 };
 
 exports.parseParams = function (str) {
-  return str.split(/\;\s?/).reduce(paramReducer, {});
+  return str.split(/;\s?/).reduce(paramReducer, {});
 };
 
 // For backward compatibility - alias will be removed in 3.0.0
 exports.parseFmtpConfig = exports.parseParams;
 
 exports.parsePayloads = function (str) {
-  return str.split(' ').map(Number);
+  return str.toString().split(' ').map(Number);
 };
 
 exports.parseRemoteCandidates = function (str) {
@@ -3571,6 +3730,7 @@ module.exports =
 	CandidateInfo		: require("./lib/CandidateInfo"),
 	CodecInfo		: require("./lib/CodecInfo"),
 	DTLSInfo		: require("./lib/DTLSInfo"),
+	CryptoInfo		: require("./lib/CryptoInfo"),
 	ICEInfo			: require("./lib/ICEInfo"),
 	MediaInfo		: require("./lib/MediaInfo"),
 	Setup			: require("./lib/Setup"),
@@ -3581,7 +3741,7 @@ module.exports =
 	TrackEncodingInfo       : require("./lib/TrackEncodingInfo"),
 	Direction		: require("./lib/Direction")
 };
-},{"./lib/CandidateInfo":14,"./lib/CodecInfo":15,"./lib/DTLSInfo":16,"./lib/Direction":17,"./lib/ICEInfo":20,"./lib/MediaInfo":21,"./lib/SDPInfo":24,"./lib/Setup":25,"./lib/SourceGroupInfo":28,"./lib/SourceInfo":29,"./lib/StreamInfo":30,"./lib/TrackEncodingInfo":31,"./lib/TrackInfo":32}],14:[function(require,module,exports){
+},{"./lib/CandidateInfo":14,"./lib/CodecInfo":15,"./lib/CryptoInfo":16,"./lib/DTLSInfo":17,"./lib/Direction":18,"./lib/ICEInfo":21,"./lib/MediaInfo":22,"./lib/SDPInfo":25,"./lib/Setup":26,"./lib/SourceGroupInfo":29,"./lib/SourceInfo":30,"./lib/StreamInfo":31,"./lib/TrackEncodingInfo":32,"./lib/TrackInfo":33}],14:[function(require,module,exports){
 /**
  * ICE candidate information
  * @namespace
@@ -3816,8 +3976,12 @@ class CodecInfo {
 		if (this.rtx)
 			//Set it
 			plain.rtx = this.rtx;
+		//Set channels
+		if (this.channels)
+			//Set it
+			plain.channels = this.channels;
 		//If we have params
-		if (this.params.length)
+		if (Object.keys(this.params).length)
 			//Add params
 			plain.params = this.params;
 		//For each rtcp fb parameter
@@ -3850,7 +4014,7 @@ class CodecInfo {
 
 	/**
 	 * Set the payload type for codec
-	 * @params {Number} type
+	 * @param {Number} type
 	 */
 	setType(type) {
 		this.type = type;
@@ -3925,8 +4089,33 @@ class CodecInfo {
 	}
 	
 	/**
+	 * Check if this codec has number of channels
+	 * @returns {Number}
+	 */
+	hasChannels() {
+		return this.channels;
+	}
+
+	/**
+	 * Get the number of channels
+	 * @returns {Number}
+	 */
+	getChannels() {
+		return this.channels;
+	}
+	
+	
+	/**
+	 * Set the number of channels
+	 * @param {Number} channels
+	 */
+	setChannels(channels) {
+		this.channels = channels;
+	}
+	
+	/**
 	 * Add an RTCP feedback parameter to this codec type
-	 * @params {RTCPFeedbackInfo} rtcpfb - RTCP feedback info objetc
+	 * @param {RTCPFeedbackInfo} rtcpfb - RTCP feedback info object
 	 */
 	addRTCPFeedback(rtcpfb) {
 		this.rtcpfbs.add(rtcpfb);
@@ -3960,6 +4149,10 @@ CodecInfo.expand = function(plain)
 	if (plain.rtx)
 		//Set it
 		codecInfo.setRTX(plain.rtx);
+	//If we have number of channels
+	if (plain.channels)
+		//Set it
+		codecInfo.setChannels(plain.channels);
 	
 	//For each rtfpcfb
 	for (let i=0; plain.rtcpfbs && i<plain.rtcpfbs.length;++i)
@@ -3977,9 +4170,9 @@ CodecInfo.expand = function(plain)
  * Create a map of CodecInfo from codec names.
  * Payload type is assigned dinamically
  * @param {Array<String>} names
- * @return Map<String,CodecInfo>
- * @params {Boolean} rtx - Should we add rtx?
+ * @param {Boolean} rtx - Should we add rtx?
  * @param {Array<String>} params - RTCP feedback params
+ * @returns {Map<String,CodecInfo>}
  */
 CodecInfo.MapFromNames = function(names,rtx,rtcpfbs)
 {
@@ -3997,15 +4190,22 @@ CodecInfo.MapFromNames = function(names,rtx,rtcpfbs)
 		//Get codec name
 		const name = params[0].toLowerCase().trim();
 		//Check name
-		if (name==='pcmu')
+		if (name==="pcmu")
 			pt = 0;
-		else if (name==='pcma')
+		else if (name==="pcma")
 			pt = 8;
 		else
 			//Dynamic
 			pt = ++dyn;
 		//Create new codec
 		const codec = new CodecInfo(name,pt);
+		//Set default number of channels
+		if (name==="opus")
+			//two
+			codec.setChannels(2);
+		else if (name==="multiopus")
+			//5.1 by default
+			codec.setChannels(6);
 		//Check if we have to add rtx
 		if (rtx && name!=="ulpfec" && name!=="flexfec-03" && name!=="red")
 			//Add it
@@ -4032,7 +4232,106 @@ CodecInfo.MapFromNames = function(names,rtx,rtcpfbs)
 
 module.exports = CodecInfo;
 
-},{"./RTCPFeedbackInfo":23}],16:[function(require,module,exports){
+},{"./RTCPFeedbackInfo":24}],16:[function(require,module,exports){
+/**
+ * SDES peer info
+ * @namespace
+ */
+class CryptoInfo
+{
+	/**
+	 * @constructor
+	 * @alias CryptoInfo
+	 * @param {Number} tag
+	 * @param {String} suite
+	 * @param {String} keyParams
+	 * @param {String} sessionParams
+	 * @returns {CryptoInfo}
+	 */
+	constructor(tag,suite,keyParams,sessionParams)
+	{
+		//store properties
+		this.tag		= tag;
+		this.suite		= suite;
+		this.keyParams		= keyParams;
+		this.sessionParams	= sessionParams;
+	}
+
+	/**
+	 * Create a clone of this SDES info object
+	 * @returns {CryptoInfo}
+	 */
+	clone() {
+		//Clone
+		return new CryptoInfo(this.tag,this.suite,this.keyParams,this.sessionParams);
+	}
+
+
+	/**
+	 * Return a plain javascript object which can be converted to JSON
+	 * @returns {Object} Plain javascript object
+	 */
+	plain() {
+		return {
+			tag		: this.tag,
+			suite		: this.suite,
+			keyParams 	: this.keyParams,
+			sessionParams	: this.sessionParams
+		};
+	}
+
+	/**
+	 * Return the SDES session params
+	 * @returns {String}
+	 */
+	getSessionParams() {
+		return this.sessionParams;
+	}
+
+	/**
+	 * Return the SDES key params
+	 * @returns {String}
+	 */
+	getKeyParams() {
+		return this.keyParams;
+	}
+
+	/**
+	 * Returns the chypher suite
+	 * @returns {String}
+	 */
+	getSuite() {
+		return this.suite;
+	}
+
+	/**
+	 * Get SDES tag
+	 * @returns {Number}
+	 */
+	getTag() {
+		return this.tag;
+	}
+}
+
+/**
+ * Expands a plain JSON object containing an CryptoInfo
+ * @param {Object} plain JSON object
+ * @returns {CryptoInfo} Parsed SDES info
+ */
+CryptoInfo.expand = function(plain)
+{
+	//Create new
+	return new CryptoInfo(
+		plain.tag,
+		plain.suite,
+		plain.keyParams,
+		plain.sessionParams
+	);
+};
+
+module.exports = CryptoInfo;
+
+},{}],17:[function(require,module,exports){
 const Setup		 = require("./Setup");
 
 /**
@@ -4129,7 +4428,7 @@ DTLSInfo.expand = function(plain)
 };
 
 module.exports = DTLSInfo;
-},{"./Setup":25}],17:[function(require,module,exports){
+},{"./Setup":26}],18:[function(require,module,exports){
 const Enum = require("./Enum");
 /**
  * Enum for Direction values.
@@ -4192,7 +4491,7 @@ Direction.reverse = function(direction)
 };
 
 module.exports = Direction;
-},{"./Enum":19}],18:[function(require,module,exports){
+},{"./Enum":20}],19:[function(require,module,exports){
 const Enum = require("./Enum");
 /**
  * Enum for DirectionWay Way values.
@@ -4247,7 +4546,7 @@ DirectionWay.reverse = function(direction)
 };
 
 module.exports = DirectionWay;
-},{"./Enum":19}],19:[function(require,module,exports){
+},{"./Enum":20}],20:[function(require,module,exports){
 
 function Enum () {
 
@@ -4261,7 +4560,7 @@ function Enum () {
 }
 
 module.exports = Enum;
-},{}],20:[function(require,module,exports){
+},{}],21:[function(require,module,exports){
 const randomBytes = require('randombytes');
 
 /**
@@ -4398,7 +4697,7 @@ ICEInfo.expand = function(plain)
 };
 
 module.exports = ICEInfo;
-},{"randombytes":7}],21:[function(require,module,exports){
+},{"randombytes":7}],22:[function(require,module,exports){
 const CodecInfo		= require ("./CodecInfo");
 const RIDInfo		= require ("./RIDInfo");
 const SimulcastInfo	= require ("./SimulcastInfo");
@@ -4426,6 +4725,7 @@ class MediaInfo {
 		this.rids	= new Map();
 		this.simulcast  = null;
 		this.bitrate	= 0;
+		this.control	= null;
 	}
 
 	/**
@@ -4455,6 +4755,10 @@ class MediaInfo {
 		if (this.simulcast)
 			//The simulcast info
 			cloned.setSimulcast(this.simulcast.clone());
+		//If it has a control attribute
+		if (this.control)
+			//Set control attribute
+			cloned.setControl(this.control);
 		//Return cloned object
 		return cloned;
 	}
@@ -4500,6 +4804,10 @@ class MediaInfo {
 		if (this.simulcast)
 			//The simulcast info
 			plain.simulcast = this.simulcast.plain();
+		//If it has a control attribute
+		if (this.control)
+			//Set control attribute
+			plain.control = this.control;
 		//Return cloned object
 		return plain;
 	}
@@ -4555,7 +4863,7 @@ class MediaInfo {
 
 	/**
 	 * Set codec map
-	 * @param {Map<String,CodecInfo> codecs - Map of codec info objecs
+	 * @param {Map<Number,CodecInfo>} codecs - Map of codec info objecs
 	 */
 	setCodecs(codecs) {
 		this.codecs = codecs;
@@ -4671,6 +4979,21 @@ class MediaInfo {
 		this.direction = direction;
 	}
 
+	/**
+	 * Get control attribute
+	 * @returns {String}
+	 */
+	getControl() {
+		return this.control;
+	}
+
+	/**
+	 * Set control attribute
+	 * @param {String} control
+	 */
+	setControl(control) {
+		this.control = control;
+	}
 
 	/**
 	 * Helper usefull for creating media info answers.
@@ -4680,9 +5003,9 @@ class MediaInfo {
 	 * @param {Object} supported - Supported codecs and extensions to be included on answer
 	 * @param {Map<String,CodecInfo>} supported.codecs - List of strings with the supported codec names
 	 * @param {Set<String>} supported.extensions - List of strings with the supported codec names
-	 * @param {Boolean] supported.simulcast - Simulcast is enabled
+	 * @param {Boolean} supported.simulcast - Simulcast is enabled
 	 * @param {Array<String>} supported.rtcpfbs - Supported RTCP feedback params
-	 * @return {MediaInfo}
+	 * @returns {MediaInfo}
 	 */
 	answer(supported)
 	{
@@ -4730,6 +5053,10 @@ class MediaInfo {
 						if (cloned.hasRTX())
 							//Change payload type also
 							cloned.setRTX(codec.getRTX());
+						//Use same number of channels
+						if (codec.hasChannels())
+							//Change payload type also
+							cloned.setChannels(codec.getChannels());
 						//Clone also config
 						cloned.addParams(codec.getParams());
 						//Add to answer
@@ -4830,10 +5157,10 @@ class MediaInfo {
 * @param {String} - Media type
 * @param {Object} supported - Supported media capabilities to be included on media info
 * @param {Map<String,CodecInfo> | Array<String>} supported.codecs - Map or codecInfo or list of strings with the supported codec names
-* @param {boolean] rtx - If rtx is supported for codecs (only needed if passing codec names instead of CodecInfo)
-* @param {Object] rtcpbfs 
+* @param {Boolean} rtx - If rtx is supported for codecs (only needed if passing codec names instead of CodecInfo)
+* @param {Object} rtcpbfs 
 * @param {Array<String>} supported.extensions - List of strings with the supported codec names
-* @return {MediaInfo}
+* @returns {MediaInfo}
 */
 MediaInfo.create = function(type,supported)
 {
@@ -4911,6 +5238,11 @@ MediaInfo.expand = function(plain)
 	if (plain.simulcast)
 		//The simulcast info
 		mediaInfo.setSimulcast(SimulcastInfo.expand(plain.simulcast));
+	
+	//If it has control attribute
+	if (plain.control)
+		//The control atttibute
+		mediaInfo.setControl(plain.control);
 
 	//Done
 	return mediaInfo;
@@ -4918,7 +5250,7 @@ MediaInfo.expand = function(plain)
 
 module.exports = MediaInfo;
 
-},{"./CodecInfo":15,"./Direction":17,"./DirectionWay":18,"./RIDInfo":22,"./RTCPFeedbackInfo":23,"./SimulcastInfo":26}],22:[function(require,module,exports){
+},{"./CodecInfo":15,"./Direction":18,"./DirectionWay":19,"./RIDInfo":23,"./RTCPFeedbackInfo":24,"./SimulcastInfo":27}],23:[function(require,module,exports){
 const DirectionWay		 = require("./DirectionWay");
 
 /**
@@ -5095,7 +5427,7 @@ RIDInfo.expand = function(plain)
 };
 
 module.exports = RIDInfo;
-},{"./DirectionWay":18}],23:[function(require,module,exports){
+},{"./DirectionWay":19}],24:[function(require,module,exports){
 /**
  * RTCP Feedback parameter
  * @namespace
@@ -5172,13 +5504,14 @@ RTCPFeedbackInfo.expand = function(plain)
 };
 
 module.exports = RTCPFeedbackInfo;
-},{}],24:[function(require,module,exports){
+},{}],25:[function(require,module,exports){
 const SDPTransform	 = require("sdp-transform");
 
 const CandidateInfo	 = require("./CandidateInfo");
 const CodecInfo		 = require("./CodecInfo");
 const RTCPFeedbackInfo	 = require("./RTCPFeedbackInfo");
 const DTLSInfo		 = require("./DTLSInfo");
+const CryptoInfo	 = require("./CryptoInfo");
 const ICEInfo		 = require("./ICEInfo");
 const MediaInfo		 = require("./MediaInfo");
 const Setup		 = require("./Setup");
@@ -5213,6 +5546,7 @@ class SDPInfo
 		this.candidates		= new Array(); //Array as we need to keep order
 		this.ice		= null;
 		this.dtls		= null;
+		this.crypto		= null;
 	}
 
 	/**
@@ -5236,7 +5570,14 @@ class SDPInfo
 			cloned.addCandidate(this.candidates[i].clone());
 		//Clone ICE and DLTS
 		cloned.setICE(this.ice.clone());
-		cloned.setDTLS(this.dtls.clone());
+		//If we have dtls info
+		if (this.dtls) 
+			//Clone it
+			cloned.setDTLS(this.dtls.clone());
+		//If we have SDES crypto info
+		if (this.crypto) 
+			//Clone it
+			cloned.setCrypto(this.crypto.clone());
 		//Return cloned object
 		return cloned;
 	}
@@ -5265,9 +5606,13 @@ class SDPInfo
 		for (let i=0;i<this.candidates.length;++i)
 			//Push cloned candidate
 			plain.candidates.push(this.candidates[i].plain());
-		//Add ICE and DLTS
-		plain.ice = this.ice && this.ice.plain();
-		plain.dtls = this.dtls && this.dtls.plain();
+		//Add ICE and DLTS and/or SDES
+		if (this.ice)
+			plain.ice =  this.ice.plain();
+		if (this.dtls)
+			plain.dtls = this.dtls.plain();
+		if (this.crypto)
+			plain.crypto = this.crypto.plain();
 		//Return plain object
 		return plain;
 	}
@@ -5322,9 +5667,18 @@ class SDPInfo
 		for (let i=0;i<this.candidates.length;++i)
 			//Push cloned candidate
 			cloned.addCandidate(this.candidates[i].clone());
-		//Clone ICE and DLTS
-		cloned.setICE(this.ice.clone());
-		cloned.setDTLS(this.dtls.clone());
+		//If we have ice
+		if (this.ice)
+			//Clone ICE and DLTS
+			cloned.setICE(this.ice.clone());
+		//If we have dtls info
+		if (this.dtls) 
+			//Clone it
+			cloned.setDTLS(this.dtls.clone());
+		//If we have SDES info
+		if (this.crypto)
+			//Clone it
+			cloned.setCrypto(this.crypto.clone());
 		//Return cloned object
 		return cloned;
 		
@@ -5389,13 +5743,41 @@ class SDPInfo
 	 */
 	getMediaById(msid)
 	{
+		//For each media
 		for (let i in this.medias)
 		{
+			//The media
 			let media = this.medias[i];
+			//Check if the same id
 			if (media.getId().toLowerCase()===msid.toLowerCase())
-				return this.media;
+				//Found
+				return media;
 		}
+		//Not found
 		return null;
+	}
+	
+	/**
+	 * Replace media with same id with the new one
+	 * @param {MediaInfo} media - The new media
+	 * @returns {boolean} true if the media was replaced, false if not found
+	 */
+	replaceMedia(media)
+	{
+		//For each media
+		for (let i in this.medias)
+		{
+			//If it has the same id
+			if (this.medias[i].getId()==media.getId())
+			{
+				//Change it
+				this.medias[i] = media;
+				//Found
+				return true;
+			}
+		}
+		//Not found
+		return false;
 	}
 
 	/**
@@ -5430,6 +5812,22 @@ class SDPInfo
 	 */
 	setDTLS(dtlsInfo) {
 		this.dtls = dtlsInfo;
+	}
+
+	/**
+	 * Get SDES info for the transport bundle
+	 * @returns {SDESInfo} DTLS info object
+	 */
+	getCrypto() {
+		return this.crypto;
+	}
+
+	/**
+	 * Set SDES info object for the transport bundle
+	 * @param {SDESInfo}  cryptoInfo - DTLS info object
+	 */
+	setCrypto(cryptoInfo) {
+		this.crypto = cryptoInfo;
 	}
 
 	/**
@@ -5533,9 +5931,17 @@ class SDPInfo
 	}
 	
 	/**
+	 * Remove all streams
+	 */
+	removeAllStreams()
+	{
+		this.streams.clear();
+	}
+	
+	/**
 	 * 
 	 * @param {String} mid Media Id
-	 * @returns {TrackInfo| Track info
+	 * @returns {TrackInfo} Track info
 	 */
 	getTrackByMediaId(mid)
 	{
@@ -5547,11 +5953,26 @@ class SDPInfo
 	}
 	
 	/**
+	 * 
+	 * @param {String} mid Media Id
+	 * @returns {TrackInfo} Streaminfo
+	 */
+	getStreamByMediaId(mid)
+	{
+		for (let stream of this.streams.values())
+			for (let [trackId,track] of stream.getTracks())
+				if (track.getMediaId()==mid)
+					return stream;
+		return null;
+	}
+	
+	
+	/**
 	 * Create answer to this SDP
 	 * @param {Object} params		- Parameters to create ansser
 	 * @param {ICEInfo} params.ice		- ICE info object
 	 * @param {DTLSInfo} params.dtls	- DTLS info object
-	 * @params{Array<CandidateInfo> params.candidates - Array of Ice candidates
+	 * @param {Array<CandidateInfo>} params.candidates - Array of Ice candidates
 	 * @param {Map<String,DTLSInfo} params.capabilites - Capabilities for each media type
 	 * @returns {SDPInfo} answer
 	 */
@@ -5574,6 +5995,14 @@ class SDPInfo
 				answer.setDTLS(params.dtls);
 			else
 				answer.setDTLS(DTLSInfo.expand(params.dtls));
+		}
+		//add crypto
+		if (params.crypto)
+		{
+			if (params.crypto instanceof CryptoInfo)
+				answer.setCrypto(params.crypto);
+			else
+				answer.setCrypto(CryptoInfo.expand(params.crypto));
 		}
 
 		//Add candidates to media info
@@ -5652,7 +6081,7 @@ class SDPInfo
 			let  md = {
 				type		: media.getType(),
 				port		: 9,
-				protocol	: 'UDP/TLS/RTP/SAVPF',
+				protocol	: "",
 				fmtp		: [],
 				rtp		: [],
 				rtcpFb		: [],
@@ -5672,6 +6101,9 @@ class SDPInfo
 
 			//Enable rtcp reduced size
 			md.rtcpRsize = "rtcp-rsize";
+			
+			//Enable mixed extmaps
+			md.extmapAllowMixed = "extmap-allow-mixed";
 
 			//Enable x-google-flag
 			//md.addAttribute("x-google-flag","conference");
@@ -5712,18 +6144,41 @@ class SDPInfo
 					});
 			}
 
-			//Set ICE credentials
-			md.iceUfrag = this.getICE().getUfrag();
-			md.icePwd   = this.getICE().getPwd();
+			//Set ICE credentialsç
+			if (this.getICE())
+			{
+				//Set ice properties
+				md.iceUfrag = this.getICE().getUfrag();
+				md.icePwd   = this.getICE().getPwd();
+			}
 
-			//Add fingerprint attribute
-			md.fingerprint = {
-				type : this.getDTLS().getHash(),
-				hash :  this.getDTLS().getFingerprint()
-			};
+			//If we are using DTLS
+			if (this.getDTLS()) {
+				//Set protocol
+				md.protocol = "UDP/TLS/RTP/SAVPF";
+				//Add fingerprint attribute
+				md.fingerprint = {
+					type : this.getDTLS().getHash(),
+					hash : this.getDTLS().getFingerprint()
+				};
 
-			//Add setup atttribute
-			md.setup = Setup.toString(this.getDTLS().getSetup());
+				//Add setup atttribute
+				md.setup = Setup.toString(this.getDTLS().getSetup());
+			//IF we are using SDES
+			} else if (this.getCrypto()) {
+				//Set protocol
+				md.protocol = "UDP/SAVPF";
+				//Set crypto attribute
+				md.crypto = [{
+					id : this.getCrypto().getTag(),
+					suite : this.getCrypto().getSuite(),
+					config : this.getCrypto().getKeyParams()
+				}];
+			//Plain RTP
+			} else {
+				//Set protocol
+				md.protocol = "UDP/AVP";
+			}
 
 			//for each codec one
 			for(let codec of media.getCodecs().values())
@@ -5745,9 +6200,17 @@ class SDPInfo
 							payload	: codec.getType(),
 							codec	: codec.getCodec(),
 							rate	: 48000,
-							encoding: 2
+							encoding: codec.getChannels()
 						});
-					else
+					else if ("multiopus" === codec.getCodec().toLowerCase())
+						//Add rtmpmap
+						md.rtp.push({
+							payload	: codec.getType(),
+							codec	: codec.getCodec(),
+							rate	: 48000,
+							encoding: codec.getChannels()
+						});
+					else 
 						//Add rtmpmap
 						md.rtp.push({
 							payload	: codec.getType(),
@@ -5954,9 +6417,14 @@ class SDPInfo
 									attribute	: "cname",
 									value		: stream.getId()
 								});
+								md.ssrcs.push({
+									id		: ssrcs[j],
+									attribute	: "msid",
+									value		: stream.getId() + " " + track.getId()
+								});
 							}
 							//Add msid
-							md.msid =  stream.getId() + " " + track.getId();
+							md.msid = stream.getId() + " " + track.getId();
 							//Done
 							break;
 						}
@@ -6020,7 +6488,7 @@ class SDPInfo
 * @param {Object} params		- Parameters to create ansser
 * @param {ICEInfo|Object} params.ice		- ICE info object
 * @param {DTLSInfo|Object} params.dtls	- DTLS info object
-* @params{Array<CandidateInfo> params.candidates - Array of Ice candidates
+* @param {Array<CandidateInfo>} params.candidates - Array of Ice candidates
 * @param {Map<String,DTLSInfo} params.capabilites - Capabilities for each media type
 * @returns {SDPInfo} answer
 */
@@ -6044,6 +6512,14 @@ SDPInfo.create = function(params)
 			sdp.setDTLS(params.dtls);
 		else
 			sdp.setDTLS(DTLSInfo.expand(params.dtls));
+	}
+	//Add crypto
+	if (params.crypto)
+	{
+		if (params.crypto instanceof CryptoInfo)
+			sdp.setCrypto(params.crypto);
+		else
+			sdp.setCrypto(CryptoInfo.expand(params.crypto));
 	}
 
 	//Add candidates to media info
@@ -6130,6 +6606,8 @@ SDPInfo.expand = function(plain)
 		sdpInfo.setICE(ICEInfo.expand(plain.ice));
 	if (plain.dtls)
 		sdpInfo.setDTLS(DTLSInfo.expand(plain.dtls));
+	if (plain.crypto)
+		sdpInfo.setCrypto(DTLSInfo.expand(plain.crypto));
 	//Return expanded object
 	return sdpInfo;
 };
@@ -6171,17 +6649,23 @@ SDPInfo.parse = function(string)
 		const media = md.type;
 
 		//And media id
-		const mid = md.mid.toString();
+		const mid = md.mid ? md.mid.toString() : i;
 
 		//Create media info
 		const mediaInfo = new MediaInfo(mid,media);
 
 		//Get ICE info
-		const ufrag = md.iceUfrag;
-		const pwd = md.icePwd;
+		
 
-		//Create iceInfo
-		sdpInfo.setICE(new ICEInfo(ufrag,pwd));
+		//Check values
+		if (md.iceUfrag && md.icePwd)
+		{
+			//Convert to string
+			const ufrag	= String(md.iceUfrag);
+			const pwd	= String(md.icePwd);
+			//Create iceInfo
+			sdpInfo.setICE(new ICEInfo(ufrag,pwd));
+		}
 		
 		//Check cnadidates
 		for (let j=0; md.candidates && j<md.candidates.length; ++j)
@@ -6207,31 +6691,50 @@ SDPInfo.parse = function(string)
 		//Check media fingerprint attribute or the global one
 		const fingerprintAttr = md.fingerprint || sdp.fingerprint;
 
-		//Get remote fingerprint and hash function
-		const remoteHash        = fingerprintAttr.type;
-		const remoteFingerprint = fingerprintAttr.hash;
+		//Check if it has fingerprint attribute
+		if (fingerprintAttr)
+		{
+			//Get remote fingerprint and hash function
+			const remoteHash        = fingerprintAttr.type;
+			const remoteFingerprint = fingerprintAttr.hash;
 
-		//Set deault setup
-		let setup = Setup.ACTPASS;
+			//Set deault setup
+			let setup = Setup.ACTPASS;
 
-		//Check setup attribute
-		if (md.setup)
-			//Set it
-			setup = Setup.byValue(md.setup);
+			//Check setup attribute
+			if (md.setup)
+				//Set it
+				setup = Setup.byValue(md.setup);
 
-		//Create new DTLS info
-		sdpInfo.setDTLS(new DTLSInfo(setup,remoteHash,remoteFingerprint));
+			//Create new DTLS info
+			sdpInfo.setDTLS(new DTLSInfo(setup,remoteHash,remoteFingerprint));
+		}
+		
+		//Check if we have SDES crypto attribute
+		if (md.crypto){
+			//Get attrinute
+			const crypto = md.crypto[0];
+			//Create new Crypto info
+			sdpInfo.setCrypto(new CryptoInfo(crypto.id, crypto.suite, crypto.config, crypto.sessionConfig));
+		}
 
 		//Media direction
 		let direction = Direction.SENDRECV;
 
 		//Check setup attribute
 		if (md.direction)
+		{
 			//Set it
 			direction = Direction.byValue(md.direction);
 
-		//Set direction
-		mediaInfo.setDirection(direction);
+			//Set direction
+			mediaInfo.setDirection(direction);
+		}
+		
+		//Check control attribute
+		if (md.control)
+			//Set it
+			mediaInfo.setControl(md.control);
 
 		//Store RTX apts so we can associate them later
 		const apts = new Map();
@@ -6270,18 +6773,29 @@ SDPInfo.parse = function(string)
 					{
 						//Parse param
 						const param = list[k].split("=");
+						//Get key
+						const key = param[0].trim();
+						//There could be more "=" for example in base 64 encoded stuff for h264 sprop
+						const value = param.splice(1).join("=").trim();
 						//Append param
-						params[param[0].trim()] = (param[1] || "").trim();
+						params[key] = value;
 					}
 				}
 			}
 			//If it is RTX
-			if ("RTX" === codec.toUpperCase())
+			if ("RTX" === codec.toUpperCase()) {
 				//Store atp
 				apts.set(parseInt(params.apt),type);
-			else
+			} else {
 				//Create codec
-				mediaInfo.addCodec(new CodecInfo(codec,type,params));
+				const codecInfo = new CodecInfo(codec,type,params);
+				//If it has multiple encodings
+				if (fmt.encoding > 1)
+					//Set number of channels
+					codecInfo.setChannels(fmt.encoding);
+				//Add it
+				mediaInfo.addCodec(codecInfo);
+			}
 		}
 
 		//Set the rtx
@@ -6642,7 +7156,7 @@ SDPInfo.parse = function(string)
 
 module.exports = SDPInfo;
 
-},{"./CandidateInfo":14,"./CodecInfo":15,"./DTLSInfo":16,"./Direction":17,"./DirectionWay":18,"./ICEInfo":20,"./MediaInfo":21,"./RIDInfo":22,"./RTCPFeedbackInfo":23,"./Setup":25,"./SimulcastInfo":26,"./SimulcastStreamInfo":27,"./SourceGroupInfo":28,"./SourceInfo":29,"./StreamInfo":30,"./TrackEncodingInfo":31,"./TrackInfo":32,"sdp-transform":10}],25:[function(require,module,exports){
+},{"./CandidateInfo":14,"./CodecInfo":15,"./CryptoInfo":16,"./DTLSInfo":17,"./Direction":18,"./DirectionWay":19,"./ICEInfo":21,"./MediaInfo":22,"./RIDInfo":23,"./RTCPFeedbackInfo":24,"./Setup":26,"./SimulcastInfo":27,"./SimulcastStreamInfo":28,"./SourceGroupInfo":29,"./SourceInfo":30,"./StreamInfo":31,"./TrackEncodingInfo":32,"./TrackInfo":33,"sdp-transform":10}],26:[function(require,module,exports){
 const Enum = require("./Enum");
 /**
  * Enum for Setup values.
@@ -6715,7 +7229,7 @@ Setup.reverse = function(setup)
 };
 
 module.exports = Setup;
-},{"./Enum":19}],26:[function(require,module,exports){
+},{"./Enum":20}],27:[function(require,module,exports){
 const SimulcastStreamInfo	= require("./SimulcastStreamInfo");
 const DirectionWay		= require("./DirectionWay");
 /**
@@ -6880,7 +7394,7 @@ SimulcastInfo.expand = function(plain)
 };
 
 module.exports = SimulcastInfo;
-},{"./DirectionWay":18,"./SimulcastStreamInfo":27}],27:[function(require,module,exports){
+},{"./DirectionWay":19,"./SimulcastStreamInfo":28}],28:[function(require,module,exports){
 
 /**
  * Simulcast streams info
@@ -6952,7 +7466,7 @@ SimulcastStreamInfo.expand = function(plain)
 };
 
 module.exports = SimulcastStreamInfo;
-},{}],28:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 
 /**
  * Group of SSRCS info
@@ -7034,7 +7548,7 @@ SourceGroupInfo.expand = function(plain)
 };
 
 module.exports = SourceGroupInfo;
-},{}],29:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 /**
  * Strem Source information
  * @namespace
@@ -7157,7 +7671,7 @@ SourceInfo.expand = function(plain)
 
 
 module.exports = SourceInfo;
-},{}],30:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 const TrackInfo = require("./TrackInfo");
 /**
  * Media Stream information
@@ -7227,11 +7741,20 @@ class StreamInfo {
 
 	/*
 	 * Remove a media track from stream
-	 * @param {Sring} trackId - Id of the track to remote
+	 * @param {TrackInfo} trackInfo - Info object from the track
 	 * @returns {TrackInfo} if the track was present on track map or not
 	 */
 	removeTrack(track) {
 		return this.tracks.delete(track.getId());
+	}
+	
+	/*
+	 * Remove a media track from stream
+	 * @param {Sring} trackId - Id of the track to remote
+	 * @returns {TrackInfo} if the track was present on track map or not
+	 */
+	removeTrackById(trackId) {
+		return this.tracks.delete(trackId);
 	}
 	/**
 	 * Get firs track for the media type
@@ -7302,7 +7825,7 @@ StreamInfo.expand = function(plain)
 
 module.exports = StreamInfo;
 
-},{"./TrackInfo":32}],31:[function(require,module,exports){
+},{"./TrackInfo":33}],32:[function(require,module,exports){
 const CodecInfo = require("./CodecInfo");
 /**
  * Simulcast encoding layer information for track
@@ -7450,7 +7973,7 @@ TrackEncodingInfo.expand = function(plain)
 };
 
 module.exports = TrackEncodingInfo;
-},{"./CodecInfo":15}],32:[function(require,module,exports){
+},{"./CodecInfo":15}],33:[function(require,module,exports){
 const SourceGroupInfo	= require("./SourceGroupInfo");
 const TrackEncodingInfo = require("./TrackEncodingInfo");
 /**
@@ -7724,5 +8247,5 @@ TrackInfo.expand = function(plain)
 };
 
 module.exports = TrackInfo;
-},{"./SourceGroupInfo":28,"./TrackEncodingInfo":31}]},{},[5])(5)
+},{"./SourceGroupInfo":29,"./TrackEncodingInfo":32}]},{},[5])(5)
 });
