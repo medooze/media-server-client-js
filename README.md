@@ -19,7 +19,7 @@ This client libray alllows to easily connect to [the Medooze Media Server](https
  npm run-script dist
  cd demo
  npm i
- npm indes.js <your ip address>
+ node index.js <your ip address>
  ```
  
 ## Usage
