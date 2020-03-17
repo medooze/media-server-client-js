@@ -30,7 +30,7 @@ In order to connect with the server you will need to connect via websocket and o
 //Connect with websocket
 const ws = new WebSocket(url);
 	
-//Crete transaction manager 
+//Create transaction manager 
 const tm = new TransactionManager(ws);
 	
 //Create managed peer connection
