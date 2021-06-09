@@ -134,7 +134,7 @@ Stops sending the track, will stop the IncomingStreamTrack server side also.
     
 #### Promise< RTCStatsReport > getStats(selector)
  
-Proxy for [TCPeerConnection getStats](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-getstats).
+Proxy for [RTCPeerConnection getStats](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-getstats).
  
 - `selector` See [RTCPeerConnection getStats](tps://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-getstats)
     
