@@ -123,7 +123,7 @@ Adds a new track to the client and creates a new IncomingStreamTrack (and Incomi
 - `track`  The track to send
 - `stream`  The stream to send
 - `params` Send params (Optional)
-	- `codecs` An array of desired codecs (eg. ["h264]), this will remove the non present codecs from the local sdp offer (Optional)
+	- `codecs` An array of desired codecs (eg. ["h264"]), this will remove the non present codecs from the local sdp offer (Optional)
 	- `encodings`  An array of [RTCRtpEncodingParameters](https://www.w3.org/TR/webrtc/#dom-rtcrtpencodingparameters) which can be used for enabling simulcast. If the encodings array is provided it will be set accordingly on the transcevier (on the sender.setParameters if on Firefox) and if it is not supported, it will mangle the SDP for chrome adding the required ssrcs to enable simulcast (Optional)
     
 #### void removeTrack(sender)
